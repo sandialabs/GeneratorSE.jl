@@ -1,0 +1,23 @@
+name = "GeneratorSE"
+uuid = "5123460e-7fba-4c4e-a1c3-84f556528963"
+authors = ["Kevin R. Moore <kevmoor@sandia.gov> and contributors"]
+version = "0.1.0"
+
+[deps]
+FLOWMath = "6cb5d3fb-0fe8-4cc2-bd89-9fe0b19a99d3"
+
+[compat]
+FiniteDiff = "2"
+FLOWMath = "1"
+ForwardDiff = "0.10, 1"
+julia = "1"
+Plots = "1"
+
+[extras]
+FiniteDiff = "6a86dc24-6348-571c-b903-95158fe2bd41"
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test", "Plots", "FiniteDiff", "ForwardDiff"]
