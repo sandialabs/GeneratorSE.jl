@@ -1,0 +1,7 @@
+[deps]
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
+GeneratorSE = "5123460e-7fba-4c4e-a1c3-84f556528963"
+
+[compat]
+Documenter = "1"
+GeneratorSE = "0.1"
