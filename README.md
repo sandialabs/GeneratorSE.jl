@@ -1,5 +1,11 @@
 # GeneratorSE.jl
 
+[![Tests](https://github.com/sandialabs/GeneratorSE.jl/actions/workflows/CI.yml/badge.svg?branch=master)](https://github.com/sandialabs/GeneratorSE.jl/actions/workflows/CI.yml)
+[![Docs](https://github.com/sandialabs/GeneratorSE.jl/actions/workflows/Docs.yml/badge.svg?branch=master)](https://sandialabs.github.io/GeneratorSE.jl/dev/)
+[![Coverage](https://codecov.io/gh/sandialabs/GeneratorSE.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/sandialabs/GeneratorSE.jl)
+
+Documentation is hosted at [sandialabs.github.io/GeneratorSE.jl/dev/](https://sandialabs.github.io/GeneratorSE.jl/dev/).
+
 GeneratorSE is a set of analytical tools for sizing variable speed wind turbine Generators. The analytical framework involves electromagnetic, structural, and basic thermal design that are integrated to provide the optimal generator design dimensions using conventional magnetic circuit laws.
 
 The tool mainly considers available torque, mechanical power, normal and shear stresses, material properties, and costs to optimize designs of variable-speed wind turbine generators by satisfying specific design criteria.
@@ -10,7 +16,7 @@ Julia Changes Author: Kevin Moore, Sandia National Labs
 
 ## Documentation
 
-See local documentation in the `docs`-directory.  Note that this translation does not include the interface to OpenMDAO, though this could be restored in the future via [OpenMDAO.jl](https://github.com/byuflowlab/OpenMDAO.jl)
+See the [hosted documentation](https://sandialabs.github.io/GeneratorSE.jl/dev/) or the local documentation in the `docs` directory. Note that this translation does not include the interface to OpenMDAO, though this could be restored in the future via [OpenMDAO.jl](https://github.com/byuflowlab/OpenMDAO.jl).
 
 ## Installation
 
