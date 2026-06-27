@@ -19,7 +19,7 @@ from the public repository URL:
 
 ```julia
 using Pkg
-Pkg.add(url = "https://github.com/kevmoor/GeneratorSE.jl")
+Pkg.add(url = "https://github.com/sandialabs/GeneratorSE.jl")
 ```
 
 For local development from a checkout:
