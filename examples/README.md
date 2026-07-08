@@ -46,6 +46,19 @@ This saves:
 - `example_pmsg_axial_halbach_final_quantity_points.csv`
 - `example_pmsg_axial_halbach_final_quantity_metrics.csv`
 
+Run the Sandia WEC Spar V0 prototype Halbach model:
+
+```bash
+julia --project examples/pmsg_axial_halbach_sandia_wec_prototype.jl
+```
+
+This uses the local milestone DOCX and `Context.md` assumptions to model the
+small coreless prototype with explicit turns, coil area, and measured phase R/L.
+
+This saves:
+
+- `sandia_wec_prototype_model.csv`
+
 Run the ORNL Prius PMSM performance-map validation example:
 
 ```bash

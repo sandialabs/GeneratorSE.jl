@@ -53,6 +53,11 @@ function PMSG_axial_Halbach(
     halbach_end_effect_factor = 1.0,   # finite-radius/end-effect derating when known from FEM or tests
     halbach_weak_side_fraction = 0.05, # residual weak-side flux crossing rotor back iron
     backiron_fraction = 0.5,           # fraction of rotor back-iron thickness retained
+    turns_per_phase = nothing,         # explicit stator turns per phase for hand-wound/fractional-slot machines
+    effective_flux_area = nothing,     # explicit flux area per pole/coil side [m^2]
+    winding_factor = nothing,          # explicit winding factor; defaults to the distributed-winding estimate
+    phase_resistance = nothing,        # measured or externally calculated phase resistance [Ohm]
+    phase_inductance = nothing,        # measured or externally calculated phase inductance [H]
     E = 2.0e11,
     P_Fe0e = 1.0,
     P_Fe0h = 4.0,
@@ -98,7 +103,8 @@ function PMSG_axial_Halbach(
     f = shaft_rpm * p / 60.0
     S = 2 * p * q1 * m
     N_conductors = S * 2
-    N_s = N_conductors / (2 * m)
+    N_s_auto = N_conductors / (2 * m)
+    N_s = turns_per_phase === nothing ? N_s_auto : turns_per_phase
     tau_s = 2 * pi * Rm / S
     b_s = b_s_tau_s * tau_s
     b_t = tau_s - b_s
@@ -136,7 +142,8 @@ function PMSG_axial_Halbach(
     B_rymax = halbach_weak_side_fraction * B_g * b_m * l_e / (2 * h_yr_safe * dr_eff)
     B_tmax = B_g * tau_s / b_t
 
-    k_wd = sin(pi / 6) / q1 / sin(pi / 6 / q1)
+    k_wd_auto = sin(pi / 6) / q1 / sin(pi / 6 / q1)
+    k_wd = winding_factor === nothing ? k_wd_auto : winding_factor
 
     l_turn = 2 * dr + 2 * tau_p
     L_t = l_turn
@@ -145,16 +152,19 @@ function PMSG_axial_Halbach(
     A_scalc = b_s * 1000 * (h_s - h_w) * 1000 * q1 * p
     A_Cus = A_s * k_fills / N_s
     A_Cuscalc = A_scalc * k_fills / N_s
-    R_s = l_Cus * resist_Cu / A_Cus
+    R_s_calc = l_Cus * resist_Cu / A_Cus
+    R_s = phase_resistance === nothing ? R_s_calc : phase_resistance
 
     L_m = mu_0 * k_wd^2 * N_s^2 * area_ag / (g_eff * p)
     L_ssigmas = 2 * mu_0 * N_s^2 / p / q1 * dr * ((h_s - h_w) / (3 * b_s) + h_w / b_so)
     L_ssigmaew = 2 * mu_0 * N_s^2 / p / q1 * dr * 0.34 * len_ag * (l_e - 0.64 * tau_p * y_tau_p) / dr_eff
     L_ssigmag = 2 * mu_0 * N_s^2 / p / q1 * dr * (5 * (len_ag * k_C / b_so) / (5 + 4 * (len_ag * k_C / b_so)))
     L_ssigma = L_ssigmas + L_ssigmaew + L_ssigmag
-    L_s = L_m + L_ssigma
+    L_s_calc = L_m + L_ssigma
+    L_s = phase_inductance === nothing ? L_s_calc : phase_inductance
 
-    phi_air = B_g * area_ag / (2 * p) * ratio_mw2pp
+    flux_area = effective_flux_area === nothing ? area_ag / (2 * p) * ratio_mw2pp : effective_flux_area
+    phi_air = B_g * flux_area
     E_p = 4.44 * f * N_s * k_wd * phi_air
 
     Z = machine_rating / (m * E_p)

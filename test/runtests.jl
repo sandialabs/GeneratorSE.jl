@@ -951,6 +951,18 @@ end
         r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
         t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
         alpha_p, m, q1, halbach_segments_per_pole=8, backiron_fraction=0.5)
+    hb_explicit_winding = GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p,
+        m,
+        q1,
+        turns_per_phase=84.0,
+        effective_flux_area=4.92e-4,
+        winding_factor=1.0,
+        phase_resistance=0.742,
+        phase_inductance=102.2e-6,
+        backiron_fraction=0.5)
 
     @test p_base == p_hb
     @test isapprox(B_pm1_hb, expected_B_pm1; rtol=1e-12)
@@ -965,6 +977,10 @@ end
     @test S_hb == S_base
     @test 0 < gen_eff_hb < 1
     @test gen_eff_base != gen_eff_hb
+    @test hb_explicit_winding[7] == 84.0
+    @test isapprox(hb_explicit_winding[13], 4.44 * hb_explicit_winding[14] * 84.0 * 4.92e-4 * hb_explicit_winding[6]; rtol=1e-12)
+    @test hb_explicit_winding[16] == 0.742
+    @test hb_explicit_winding[17] == 102.2e-6
 end
 
 @testset "GeneratorSE PMSG_outer" begin
