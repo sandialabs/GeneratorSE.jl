@@ -334,6 +334,9 @@ function pmsg_halbach_continuous(;
     h_yr_local = 0.05,
     len_ag_local = 0.00075 * (r_in_local + r_out_local),
     backiron_fraction_local = 0.5,
+    ratio_mw2pp_local = 0.7,
+    halbach_field_model_local = :ideal_sheet,
+    halbach_field_eval_offset_local = 0.0,
 )
     return GeneratorSE.PMSG_axial_Halbach(
         r_in_local,
@@ -364,6 +367,9 @@ function pmsg_halbach_continuous(;
         m = 3.0,
         q1 = 1.0,
         backiron_fraction = backiron_fraction_local,
+        ratio_mw2pp = ratio_mw2pp_local,
+        halbach_field_model = halbach_field_model_local,
+        halbach_field_eval_offset = halbach_field_eval_offset_local,
         continuous = true,
     )
 end
@@ -596,6 +602,14 @@ end
         "PMSG_axial_Halbach Iron wrt backiron_fraction",
         x -> pmsg_halbach_continuous(backiron_fraction_local = x)[26],
         (0.35, 0.5, 0.65),
+    )
+    assert_ad_matches_fd(
+        "PMSG_axial_Halbach finite-width B_g wrt field_eval_offset",
+        x -> pmsg_halbach_continuous(
+            halbach_field_model_local = :finite_width_harmonic,
+            halbach_field_eval_offset_local = x,
+        )[6],
+        (0.001, 0.002, 0.003),
     )
 
     assert_ad_matches_fd(
@@ -951,6 +965,18 @@ end
         r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
         t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
         alpha_p, m, q1, halbach_segments_per_pole=8, backiron_fraction=0.5)
+    finite_width_ratio = 0.8
+    finite_eval_offset = 0.002
+    hb_finite_width = GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p,
+        m,
+        q1,
+        ratio_mw2pp=finite_width_ratio,
+        halbach_field_model=:finite_width_harmonic,
+        halbach_field_eval_offset=finite_eval_offset,
+        backiron_fraction=0.5)
     hb_explicit_winding = GeneratorSE.PMSG_axial_Halbach(
         r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
         t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
@@ -963,6 +989,9 @@ end
         phase_resistance=0.742,
         phase_inductance=102.2e-6,
         backiron_fraction=0.5)
+    finite_width_segment_factor = finite_width_ratio * sin(finite_width_ratio * x_segment) / (finite_width_ratio * x_segment)
+    expected_finite_width_B_pm1 = 2 * B_r * finite_width_segment_factor *
+        (1 - exp(-k_halbach * h_m / mu_r)) * exp(-k_halbach * (len_ag + finite_eval_offset))
 
     @test p_base == p_hb
     @test isapprox(B_pm1_hb, expected_B_pm1; rtol=1e-12)
@@ -972,6 +1001,12 @@ end
     @test hb_thick[6] / B_g_hb < 2
     @test hb_wide_gap[6] < B_g_hb
     @test hb_coarse[6] < B_g_hb < hb_fine[6]
+    @test isapprox(hb_finite_width[5], expected_finite_width_B_pm1; rtol=1e-12)
+    @test hb_finite_width[6] < B_g_hb
+    @test_throws ArgumentError GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p, m, q1, halbach_field_model=:unsupported, backiron_fraction=0.5)
     @test Iron_hb < Iron_base
     @test isapprox(mass_PM_hb, mass_PM_base; atol=1e-12)
     @test S_hb == S_base

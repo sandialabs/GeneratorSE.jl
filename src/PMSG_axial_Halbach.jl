@@ -1,6 +1,27 @@
 # Axial-flux variant with a screening-level Halbach rotor model.
 # The output tuple mirrors PMSG_axial so downstream sizing code can swap models.
 
+function _sinc_unity(x)
+    if abs(x) < 1.0e-6
+        x2 = x * x
+        return one(x) - x2 / 6 + x2 * x2 / 120
+    end
+    return sin(x) / x
+end
+
+function _halbach_segmentation_factor(segment_count, magnet_width_ratio, field_model)
+    x_segment = pi / (2 * segment_count)
+
+    if field_model == :ideal_sheet
+        return _sinc_unity(x_segment)
+    elseif field_model == :finite_width_harmonic
+        segment_fill = _smooth_min(_smooth_max(magnet_width_ratio, 0.0), 1.0)
+        return segment_fill * _sinc_unity(segment_fill * x_segment)
+    end
+
+    throw(ArgumentError("halbach_field_model must be :ideal_sheet or :finite_width_harmonic"))
+end
+
 function halbach_fundamental_flux_density(
     B_r,
     h_m,
@@ -11,13 +32,15 @@ function halbach_fundamental_flux_density(
     flux_scale = 1.0,
     end_effect_factor = 1.0,
     rotor_count = 2,
+    field_model = :ideal_sheet,
+    magnet_width_ratio = 1.0,
+    field_eval_offset = 0.0,
 )
     k_halbach = pi / tau_p
     segment_count = _smooth_max(segments_per_pole, 1.0)
-    x_segment = pi / (2 * segment_count)
-    segmentation_factor = sin(x_segment) / x_segment
+    segmentation_factor = _halbach_segmentation_factor(segment_count, magnet_width_ratio, field_model)
     magnet_thickness_factor = 1 - exp(-k_halbach * h_m / mu_r)
-    gap_factor = exp(-k_halbach * len_ag)
+    gap_factor = exp(-k_halbach * (len_ag + field_eval_offset))
 
     return rotor_count * flux_scale * end_effect_factor * B_r * segmentation_factor * magnet_thickness_factor * gap_factor
 end
@@ -49,7 +72,9 @@ function PMSG_axial_Halbach(
     len_ag = 0.00075 * (r_in + r_out),
     B_r = 1.2,
     halbach_flux_boost = 1.0,          # optional calibration multiplier, unity by default
+    halbach_field_model = :ideal_sheet,# :ideal_sheet preserves legacy behavior; :finite_width_harmonic applies magnet coverage
     halbach_segments_per_pole = 4,     # magnetization steps per pole; larger approaches continuous Halbach
+    halbach_field_eval_offset = 0.0,   # extra distance from mechanical air gap to the winding/field evaluation plane [m]
     halbach_end_effect_factor = 1.0,   # finite-radius/end-effect derating when known from FEM or tests
     halbach_weak_side_fraction = 0.05, # residual weak-side flux crossing rotor back iron
     backiron_fraction = 0.5,           # fraction of rotor back-iron thickness retained
@@ -133,6 +158,9 @@ function PMSG_axial_Halbach(
         flux_scale = halbach_flux_boost,
         end_effect_factor = halbach_end_effect_factor,
         rotor_count,
+        field_model = halbach_field_model,
+        magnet_width_ratio = ratio_mw2pp,
+        field_eval_offset = halbach_field_eval_offset,
     )
     B_g = B_pm1
     l_u = k_fes * dr
