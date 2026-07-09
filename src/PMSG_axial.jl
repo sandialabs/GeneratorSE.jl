@@ -98,7 +98,7 @@ function PMSG_axial(
     g_eff = k_C * ahm
 
     om_m = 2 * pi * shaft_rpm / 60.0
-    om_e = p * om_m / 2
+    om_e = p * om_m
 
     # Magnetic loading
     B_pm1 = B_r * h_m / mu_r / g_eff
@@ -145,7 +145,7 @@ function PMSG_axial(
     if convergefaster
         I_s = sqrt(2 * _smooth_abs((E_p * 1.1)^2 - sqrt(G)) / (om_e * L_s)^2)
     else
-        I_s = sqrt(Z^2 + (((E_p - sqrt(G)) / (om_e * L_s)^2)^2))
+        I_s = sqrt(Z^2 + ((E_p - sqrt(G)) / (om_e * L_s))^2)
     end
     J_s = I_s / A_Cuscalc
     A_1 = 6 * N_s * I_s / (pi * 2 * Rm)

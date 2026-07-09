@@ -18,6 +18,18 @@ Julia Changes Author: Kevin Moore, Sandia National Labs
 
 See the [hosted documentation](https://sandialabs.github.io/GeneratorSE.jl/dev/) or the local documentation in the `docs` directory. Note that this translation does not include the interface to OpenMDAO, though this could be restored in the future via [OpenMDAO.jl](https://github.com/byuflowlab/OpenMDAO.jl).
 
+## Modeling Deviations From Original Code
+
+The Julia `PMSG_arms` and `PMSG_axial` models intentionally deviate from the
+original translated electrical equations in two places. First, `p` is treated as
+pole pairs throughout the models, so electrical angular speed is computed as
+`omega_e = p * omega_m` rather than `p * omega_m / 2`. Second, the stator-current
+reactive term divides by electrical reactance, `omega_e * L_s`; the original
+translated expression effectively divided by `(omega_e * L_s)^2` before
+squaring the current component. These changes are dimensional-consistency
+corrections and affect calculated current, electrical loading, copper loss, and
+efficiency. The Halbach axial model uses the same corrected current expression.
+
 ## Installation
 
 `GeneratorSE.jl` is distributed as an unregistered Julia package. Install it

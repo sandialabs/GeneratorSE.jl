@@ -1,5 +1,10 @@
 # Examples
 
+The axial and arms examples use GeneratorSE's corrected electrical conventions:
+`p` is pole pairs, so `omega_e = p * omega_m`, and the current estimate divides
+the reactive term by `omega_e * L_s`. This differs from the original translated
+code and is documented in the package README and theory docs.
+
 Run the axial operating-surface example from the repository root:
 
 ```bash
@@ -19,16 +24,18 @@ Optional controls:
 GENERATORSE_EXAMPLE_NRPM=25 GENERATORSE_EXAMPLE_NTORQUE=25 julia --project examples/pmsg_axial_operating_surfaces.jl
 ```
 
-Run the axial Halbach validation example:
+Run the axial Halbach regression/sanity example:
 
 ```bash
 julia --project examples/pmsg_axial_halbach_validation.jl
 ```
 
+This is not an independent validation set: the ideal Halbach target mirrors the
+implementation equation, and the other comparisons are normalized sanity checks.
 This saves:
 
-- `example_pmsg_axial_halbach_flux_validation.pdf`
-- `example_pmsg_axial_halbach_generator_validation.pdf`
+- `example_pmsg_axial_halbach_flux_regression.pdf`
+- `example_pmsg_axial_halbach_generator_sanity.pdf`
 - `example_pmsg_axial_halbach_metrics.csv`
 
 Run the axial Halbach final-quantity validation example:

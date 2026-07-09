@@ -203,7 +203,7 @@ function PMSG_arms(
 
     # angular frequency in radians
     om_m = 2 * pi * shaft_rpm / 60.0  # rpm to radians per second
-    om_e = p * om_m / 2  # electrical output frequency (Hz)
+    om_e = p * om_m  # electrical angular speed [rad/s]; p is pole pairs
 
     # Calculating magnetic loading
     B_pm1 = B_r * h_m / mu_r / g_eff
@@ -253,7 +253,7 @@ function PMSG_arms(
     if convergefaster
         I_s = sqrt(2*_smooth_abs((E_p*1.1)^2 - G^0.5)/(om_e*L_s)^2)
     else
-        I_s = sqrt(Z ^ 2 + (((E_p - G ^ 0.5) / (om_e * L_s) ^ 2) ^ 2))
+        I_s = sqrt(Z ^ 2 + ((E_p - G ^ 0.5) / (om_e * L_s)) ^ 2)
     end
     J_s = I_s / A_Cuscalc
     A_1 = 6 * N_s * I_s / (pi * dia_ag)

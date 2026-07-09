@@ -519,7 +519,7 @@ end
 
     @test isapprox(B_symax, 0.31869052515138424; atol)
     @test isapprox(B_tmax, 1.391188727217009; atol)
-    @test isapprox(B_smax, 0.0995499652108797; atol)
+    @test isapprox(B_smax, 0.10718264483436306; atol)
     @test isapprox(B_rymax, 0.28682147263624586; atol)
     @test isapprox(B_pm1, 0.674462389329781; atol)
     @test isapprox(B_g, 0.7651537999693548; atol)
@@ -530,14 +530,14 @@ end
     @test isapprox(b_m, 0.055999999999999994; atol)
     @test isapprox(E_p, 2013.9466358469522; atol)
     @test isapprox(f, 25.813333333333333; atol)
-    @test isapprox(I_s, 846.2065921065657; atol)
+    @test isapprox(I_s, 911.0868138037522; atol)
     @test isapprox(R_s, 0.09770712863768102; atol)
     @test isapprox(L_s, 0.011401106062847888; atol)
-    @test isapprox(A_1, 63455.62872651724; atol)
-    @test isapprox(J_s, 3.337574160500578; atol)
-    @test isapprox(Losses, 351360.55854497873; atol)
+    @test isapprox(A_1, 68320.88893379335; atol)
+    @test isapprox(J_s, 3.593472133269867; atol)
+    @test isapprox(Losses, 363547.9143340165; atol)
     @test isapprox(K_rad, 0.245398773006135; atol)
-    @test isapprox(gen_eff, 0.9343418267745142; atol)
+    @test isapprox(gen_eff, 0.9322187626286623; atol)
     @test isapprox(S, 768.0; atol)
     @test isapprox(Slot_aspect_ratio, 5.832426544390113; atol)
     @test isapprox(Copper, 6654.6915566955695; atol)
@@ -992,6 +992,26 @@ end
     finite_width_segment_factor = finite_width_ratio * sin(finite_width_ratio * x_segment) / (finite_width_ratio * x_segment)
     expected_finite_width_B_pm1 = 2 * B_r * finite_width_segment_factor *
         (1 - exp(-k_halbach * h_m / mu_r)) * exp(-k_halbach * (len_ag + finite_eval_offset))
+    annulus_flux_area = pi * (r_out^2 - r_in^2) / (2 * p_hb)
+    hb_finite_width_default_area = GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p,
+        m,
+        q1,
+        ratio_mw2pp=finite_width_ratio,
+        halbach_field_model=:finite_width_harmonic,
+        backiron_fraction=0.5)
+    hb_finite_width_explicit_area = GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p,
+        m,
+        q1,
+        ratio_mw2pp=finite_width_ratio,
+        halbach_field_model=:finite_width_harmonic,
+        effective_flux_area=annulus_flux_area,
+        backiron_fraction=0.5)
 
     @test p_base == p_hb
     @test isapprox(B_pm1_hb, expected_B_pm1; rtol=1e-12)
@@ -1003,6 +1023,13 @@ end
     @test hb_coarse[6] < B_g_hb < hb_fine[6]
     @test isapprox(hb_finite_width[5], expected_finite_width_B_pm1; rtol=1e-12)
     @test hb_finite_width[6] < B_g_hb
+    @test isapprox(hb_finite_width_default_area[13], hb_finite_width_explicit_area[13]; rtol=1e-12)
+    @test isapprox(
+        hb_finite_width_default_area[13],
+        4.44 * hb_finite_width_default_area[14] * hb_finite_width_default_area[7] *
+            annulus_flux_area * hb_finite_width_default_area[6];
+        rtol=1e-12,
+    )
     @test_throws ArgumentError GeneratorSE.PMSG_axial_Halbach(
         r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
         t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;

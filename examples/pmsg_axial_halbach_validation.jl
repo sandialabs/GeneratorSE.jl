@@ -1,8 +1,9 @@
 #!/usr/bin/env julia
 
 """
-Validate the axial Halbach PMSG screening model against literature-derived
-Halbach and axial-flux PM data, then save comparison plots and metrics.
+Run axial Halbach PMSG screening-model regression and sanity comparisons against
+literature-derived Halbach and axial-flux PM quantities, then save plots and
+metrics.
 
 Run from repository root:
 
@@ -10,9 +11,15 @@ Run from repository root:
 
 Generated outputs:
 
-- `figs/example_pmsg_axial_halbach_flux_validation.pdf`
-- `figs/example_pmsg_axial_halbach_generator_validation.pdf`
+- `figs/example_pmsg_axial_halbach_flux_regression.pdf`
+- `figs/example_pmsg_axial_halbach_generator_sanity.pdf`
 - `figs/example_pmsg_axial_halbach_metrics.csv`
+
+Important classification:
+- The ideal Halbach gap-decay target mirrors the same first-harmonic sheet
+  equation used by the implementation, so it is a regression check.
+- The speed-scaling and superposition comparisons are sanity checks unless
+  independent FEM or measured axial-Halbach map data are supplied.
 
 Data sources embedded below:
 - Mohammadi, Lang, Kirtley, and Trumper, arXiv:2312.04053, Table I.
@@ -270,11 +277,11 @@ function main()
     rpms, e_model, e_target, angles_deg, bjork_model, bjork_target = build_generator_validation()
 
     metrics = [
-        metric_row("ideal_halbach_gap_decay", "normalized_Bg", flux_pred, flux_target, "first_harmonic_halbach_sheet"),
-        metric_row("legacy_scalar_boost_gap_decay", "normalized_Bg", flux_legacy, flux_target, "old_constant_boost_reference"),
-        metric_row("mohammadi_2024_design_point", "Bg_T", [moham_pred], [moham_target], "arxiv_2312_04053_table_I"),
-        metric_row("wang_2025_back_emf_speed_scaling", "peak_back_emf_V", e_model, e_target, "arxiv_2509_23561_fig_12"),
-        metric_row("bjork_2010_superposition_fit", "center_B_T", bjork_model, bjork_target, "arxiv_1410_2681_fig_11"),
+        metric_row("ideal_halbach_gap_decay_regression", "normalized_Bg", flux_pred, flux_target, "implementation_equation_regression"),
+        metric_row("legacy_scalar_boost_gap_decay_reference", "normalized_Bg", flux_legacy, flux_target, "old_constant_boost_reference"),
+        metric_row("mohammadi_2024_design_point_sanity", "Bg_T", [moham_pred], [moham_target], "literature_geometry_run_through_same_first_harmonic_model"),
+        metric_row("wang_2025_back_emf_speed_scaling_sanity", "peak_back_emf_V", e_model, e_target, "normalized_speed_scaling_not_absolute_validation"),
+        metric_row("bjork_2010_superposition_fit_sanity", "center_B_T", bjork_model, bjork_target, "target_fit_replayed_as_vector_superposition"),
     ]
 
     p_flux = Plots.plot(
@@ -294,7 +301,7 @@ function main()
         size = (900, 620),
     )
     Plots.plot!(p_flux, gap_ratios, flux_legacy; label = "Legacy scalar boost", linestyle = :dash, color = :gray)
-    Plots.scatter!(p_flux, gap_ratios, flux_pred; label = "GeneratorSE Halbach", color = :steelblue)
+    Plots.scatter!(p_flux, gap_ratios, flux_pred; label = "GeneratorSE regression", color = :steelblue)
     Plots.scatter!(
         p_flux,
         [0.0005 / (0.040 / 2)],
@@ -304,7 +311,7 @@ function main()
         markersize = 8,
         color = :firebrick,
     )
-    Plots.savefig(p_flux, joinpath(figdir, "example_pmsg_axial_halbach_flux_validation.pdf"))
+    Plots.savefig(p_flux, joinpath(figdir, "example_pmsg_axial_halbach_flux_regression.pdf"))
 
     p_emf = Plots.plot(
         rpms,
@@ -321,7 +328,7 @@ function main()
         bottom_margin = 6 * Plots.mm,
         size = (900, 620),
     )
-    Plots.scatter!(p_emf, rpms, e_model; label = "GeneratorSE scaled to Wang 3000 rpm", color = :darkgreen)
+    Plots.scatter!(p_emf, rpms, e_model; label = "GeneratorSE scaled sanity check", color = :darkgreen)
 
     p_super = Plots.plot(
         angles_deg,
@@ -340,7 +347,7 @@ function main()
     Plots.scatter!(p_super, angles_deg, bjork_model; label = "Vector superposition", color = :purple)
 
     combined = Plots.plot(p_emf, p_super; layout = (1, 2), size = (1300, 560), margin = 6 * Plots.mm)
-    Plots.savefig(combined, joinpath(figdir, "example_pmsg_axial_halbach_generator_validation.pdf"))
+    Plots.savefig(combined, joinpath(figdir, "example_pmsg_axial_halbach_generator_sanity.pdf"))
 
     metrics_file = joinpath(figdir, "example_pmsg_axial_halbach_metrics.csv")
     write_metrics(metrics_file, metrics)
@@ -356,7 +363,7 @@ function main()
             row[8],
         )
     end
-    @info "Saved Halbach validation outputs." figdir metrics_file
+    @info "Saved Halbach regression/sanity outputs." figdir metrics_file
 end
 
 main()

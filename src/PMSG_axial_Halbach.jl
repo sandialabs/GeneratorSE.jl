@@ -191,7 +191,8 @@ function PMSG_axial_Halbach(
     L_s_calc = L_m + L_ssigma
     L_s = phase_inductance === nothing ? L_s_calc : phase_inductance
 
-    flux_area = effective_flux_area === nothing ? area_ag / (2 * p) * ratio_mw2pp : effective_flux_area
+    flux_area_width_factor = halbach_field_model == :finite_width_harmonic ? 1.0 : ratio_mw2pp
+    flux_area = effective_flux_area === nothing ? area_ag / (2 * p) * flux_area_width_factor : effective_flux_area
     phi_air = B_g * flux_area
     E_p = 4.44 * f * N_s * k_wd * phi_air
 
@@ -205,7 +206,7 @@ function PMSG_axial_Halbach(
     if convergefaster
         I_s = sqrt(2 * _smooth_abs((E_p * 1.1)^2 - sqrt(G)) / (om_e * L_s)^2)
     else
-        I_s = sqrt(Z^2 + (((E_p - sqrt(G)) / (om_e * L_s)^2)^2))
+        I_s = sqrt(Z^2 + ((E_p - sqrt(G)) / (om_e * L_s))^2)
     end
     J_s = I_s / A_Cuscalc
     A_1 = 6 * N_s * I_s / (pi * 2 * Rm)
