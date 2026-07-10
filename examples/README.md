@@ -38,34 +38,6 @@ This saves:
 - `example_pmsg_axial_halbach_generator_sanity.pdf`
 - `example_pmsg_axial_halbach_metrics.csv`
 
-Run the axial Halbach final-quantity validation example:
-
-```bash
-julia --project examples/pmsg_axial_halbach_final_quantity_validation.jl
-```
-
-This calls `PMSG_axial_Halbach` on measured nonzero-speed axial-flux PM motor
-operating points and compares torque/speed against current and voltage.
-
-This saves:
-
-- `example_pmsg_axial_halbach_final_quantity_validation.pdf`
-- `example_pmsg_axial_halbach_final_quantity_points.csv`
-- `example_pmsg_axial_halbach_final_quantity_metrics.csv`
-
-Run the Sandia WEC Spar V0 prototype Halbach model:
-
-```bash
-julia --project examples/pmsg_axial_halbach_sandia_wec_prototype.jl
-```
-
-This uses the local milestone DOCX and `Context.md` assumptions to model the
-small coreless prototype with explicit turns, coil area, and measured phase R/L.
-
-This saves:
-
-- `sandia_wec_prototype_model.csv`
-
 Run the ORNL Prius PMSM performance-map validation example:
 
 ```bash

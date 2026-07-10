@@ -26,8 +26,7 @@ Notes on the public data:
   approximately 225/230 Vdc. The text states that the low-voltage test was
   maintained at 230 Vdc; some figure captions label the same map as 225 Vdc.
 - This example does not validate `PMSG_axial_Halbach`; it is a separate PMSM dq
-  operating-map benchmark. Use `pmsg_axial_halbach_final_quantity_validation.jl`
-  for final current/voltage comparisons that call `PMSG_axial_Halbach`.
+  operating-map benchmark.
 - The public report does not provide raw numeric map files. The validation
   points below are representative digitized points from the published contour
   figures, with current targets derived from the ORNL locked-rotor
