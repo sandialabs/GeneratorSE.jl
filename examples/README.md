@@ -38,6 +38,35 @@ This saves:
 - `example_pmsg_axial_halbach_generator_sanity.pdf`
 - `example_pmsg_axial_halbach_metrics.csv`
 
+For hand-wound or coreless prototypes, the Halbach model accepts physical
+winding inputs without requiring measured electrical constants. Resistance uses
+the following precedence:
+
+1. `phase_resistance`;
+2. any available physical inputs: `conductor_area` (or `wire_gauge_awg`) and
+   `mean_turn_length`, or the complete trapezoid support geometry
+   `coil_inner_radius`, `coil_outer_radius`, and `coil_span_angle`; and
+3. the legacy slot-fill estimate when none of those inputs is supplied.
+
+`phase_lead_length`, `parallel_paths`, and the existing `resist_Cu` input make
+the remaining resistance assumptions explicit. `mean_turn_length` is the full
+length of one turn, not one coil side.
+Wire area and turn geometry may be supplied independently; an omitted quantity
+uses the model's internal winding-geometry or slot-fill assumption.
+
+Inductance similarly uses `phase_inductance` first. Otherwise,
+`inductance_model=:concentrated_coreless` requires `turns_per_coil`,
+`coils_in_series_per_phase`, and `inductance_coil_area`; optional mutual and
+leakage assumptions are supplied with `coil_mutual_coupling` and
+`phase_leakage_inductance`. Omitting these inputs preserves the legacy
+distributed-winding estimate.
+
+Flux linkage can use an explicit `phase_flux_linkage`, or an
+`airgap_flux_density` with `effective_flux_area`, `winding_factor`, and
+`flux_linkage_factor`. Here `effective_flux_area` means the field-weighted area
+linked by one coil/pole, not necessarily the gross coil envelope. If no explicit
+flux input is given, the Halbach field and annular-area defaults are retained.
+
 Run the ORNL Prius PMSM performance-map validation example:
 
 ```bash

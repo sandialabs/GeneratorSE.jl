@@ -9,6 +9,11 @@ function _sinc_unity(x)
     return sin(x) / x
 end
 
+function _awg_conductor_area(awg)
+    diameter_m = 0.005 * 0.0254 * 92^((36 - awg) / 39)
+    return pi * diameter_m^2 / 4
+end
+
 function _halbach_segmentation_factor(segment_count, magnet_width_ratio, field_model)
     x_segment = pi / (2 * segment_count)
 
@@ -83,6 +88,23 @@ function PMSG_axial_Halbach(
     winding_factor = nothing,          # explicit winding factor; defaults to the distributed-winding estimate
     phase_resistance = nothing,        # measured or externally calculated phase resistance [Ohm]
     phase_inductance = nothing,        # measured or externally calculated phase inductance [H]
+    wire_gauge_awg = nothing,          # bare round-wire AWG; used only when conductor_area is omitted
+    conductor_area = nothing,          # bare area of one conductor/path [m^2]; overrides wire_gauge_awg
+    mean_turn_length = nothing,         # full conductor length of one turn [m]
+    coil_inner_radius = nothing,       # optional trapezoid inner radius for mean-turn calculation [m]
+    coil_outer_radius = nothing,       # optional trapezoid outer radius for mean-turn calculation [m]
+    coil_span_angle = nothing,         # optional trapezoid angular span for mean-turn calculation [rad]
+    phase_lead_length = 0.0,           # additional series conductor length per phase path [m]
+    parallel_paths = 1.0,              # equal electrical paths in parallel within one phase
+    inductance_model = :legacy_distributed, # or :concentrated_coreless
+    turns_per_coil = nothing,          # required for :concentrated_coreless
+    coils_in_series_per_phase = nothing,# required for :concentrated_coreless
+    inductance_coil_area = nothing,    # linked area of one concentrated coil [m^2]
+    coil_mutual_coupling = 0.0,        # equal-pair mutual/self sensitivity; zero means uncoupled coils
+    phase_leakage_inductance = 0.0,    # explicit phase leakage addition for concentrated model [H]
+    flux_linkage_factor = 1.0,         # spatial/3-D linked-flux factor; scales phi/E but not reported B_g
+    airgap_flux_density = nothing,     # explicit fundamental winding-plane B [T]; overrides the Halbach field estimate
+    phase_flux_linkage = nothing,      # explicit peak phase linkage [Wb-turn]; highest-priority flux input
     E = 2.0e11,
     P_Fe0e = 1.0,
     P_Fe0h = 4.0,
@@ -162,7 +184,13 @@ function PMSG_axial_Halbach(
         magnet_width_ratio = ratio_mw2pp,
         field_eval_offset = halbach_field_eval_offset,
     )
-    B_g = B_pm1
+    if airgap_flux_density !== nothing && airgap_flux_density <= 0
+        throw(ArgumentError("airgap_flux_density must be positive"))
+    end
+    if phase_flux_linkage !== nothing && phase_flux_linkage <= 0
+        throw(ArgumentError("phase_flux_linkage must be positive"))
+    end
+    B_g = airgap_flux_density === nothing ? B_pm1 : airgap_flux_density
     l_u = k_fes * dr
     l_e = dr
     b_m = ratio_mw2pp * tau_p
@@ -173,28 +201,101 @@ function PMSG_axial_Halbach(
     k_wd_auto = sin(pi / 6) / q1 / sin(pi / 6 / q1)
     k_wd = winding_factor === nothing ? k_wd_auto : winding_factor
 
-    l_turn = 2 * dr + 2 * tau_p
-    L_t = l_turn
-    l_Cus = 2 * N_s * l_turn
+    l_turn_legacy = 2 * dr + 2 * tau_p
+    L_t = l_turn_legacy
+    geometry_inputs = (coil_inner_radius, coil_outer_radius, coil_span_angle)
+    geometry_input_count = count(x -> x !== nothing, geometry_inputs)
+    if geometry_input_count != 0 && geometry_input_count != 3
+        throw(ArgumentError("coil_inner_radius, coil_outer_radius, and coil_span_angle must be provided together"))
+    end
+    if geometry_input_count == 3 && (coil_outer_radius <= coil_inner_radius || coil_inner_radius < 0 || coil_span_angle <= 0)
+        throw(ArgumentError("coil support geometry must have 0 <= inner radius < outer radius and positive span angle"))
+    end
+    if mean_turn_length !== nothing && mean_turn_length <= 0
+        throw(ArgumentError("mean_turn_length must be positive"))
+    end
+    if phase_lead_length < 0 || parallel_paths <= 0
+        throw(ArgumentError("phase_lead_length must be nonnegative and parallel_paths must be positive"))
+    end
+    if conductor_area !== nothing && conductor_area <= 0
+        throw(ArgumentError("conductor_area must be positive"))
+    end
+    if wire_gauge_awg !== nothing && wire_gauge_awg < 0
+        throw(ArgumentError("wire_gauge_awg must be nonnegative"))
+    end
+
+    l_turn_physical = if mean_turn_length !== nothing
+        mean_turn_length
+    elseif geometry_input_count == 3
+        2 * (coil_outer_radius - coil_inner_radius) + coil_span_angle * (coil_inner_radius + coil_outer_radius)
+    else
+        l_turn_legacy
+    end
+    supplied_conductor_area = conductor_area !== nothing ? conductor_area :
+                              (wire_gauge_awg !== nothing ? _awg_conductor_area(wire_gauge_awg) : nothing)
+    physical_winding_path = supplied_conductor_area !== nothing || mean_turn_length !== nothing || geometry_input_count == 3
+
     A_s = b_s * (h_s - h_w) * q1 * p
     A_scalc = b_s * 1000 * (h_s - h_w) * 1000 * q1 * p
-    A_Cus = A_s * k_fills / N_s
-    A_Cuscalc = A_scalc * k_fills / N_s
-    R_s_calc = l_Cus * resist_Cu / A_Cus
+    A_Cus_legacy = A_s * k_fills / N_s
+    A_Cuscalc_legacy = A_scalc * k_fills / N_s
+    phase_path_length = N_s * l_turn_physical + phase_lead_length
+    l_Cus = physical_winding_path ? phase_path_length * parallel_paths : 2 * N_s * l_turn_legacy
+    A_Cus = supplied_conductor_area === nothing ? A_Cus_legacy : supplied_conductor_area
+    A_Cuscalc = supplied_conductor_area === nothing ? A_Cuscalc_legacy : supplied_conductor_area * 1.0e6
+    R_s_calc = physical_winding_path ? resist_Cu * phase_path_length / (A_Cus * parallel_paths) : l_Cus * resist_Cu / A_Cus
     R_s = phase_resistance === nothing ? R_s_calc : phase_resistance
 
-    L_m = mu_0 * k_wd^2 * N_s^2 * area_ag / (g_eff * p)
+    L_m_legacy = mu_0 * k_wd^2 * N_s^2 * area_ag / (g_eff * p)
     L_ssigmas = 2 * mu_0 * N_s^2 / p / q1 * dr * ((h_s - h_w) / (3 * b_s) + h_w / b_so)
     L_ssigmaew = 2 * mu_0 * N_s^2 / p / q1 * dr * 0.34 * len_ag * (l_e - 0.64 * tau_p * y_tau_p) / dr_eff
     L_ssigmag = 2 * mu_0 * N_s^2 / p / q1 * dr * (5 * (len_ag * k_C / b_so) / (5 + 4 * (len_ag * k_C / b_so)))
     L_ssigma = L_ssigmas + L_ssigmaew + L_ssigmag
-    L_s_calc = L_m + L_ssigma
-    L_s = phase_inductance === nothing ? L_s_calc : phase_inductance
+    L_s_legacy = L_m_legacy + L_ssigma
+    L_m = L_m_legacy
+    L_s_calc = L_s_legacy
+    if phase_inductance === nothing
+        if inductance_model == :legacy_distributed
+            L_s = L_s_legacy
+        elseif inductance_model == :concentrated_coreless
+            if turns_per_coil === nothing || coils_in_series_per_phase === nothing || inductance_coil_area === nothing
+                throw(ArgumentError("turns_per_coil, coils_in_series_per_phase, and inductance_coil_area are required for :concentrated_coreless"))
+            end
+            if turns_per_coil <= 0 || coils_in_series_per_phase <= 0 || inductance_coil_area <= 0
+                throw(ArgumentError("concentrated-coreless winding inputs must be positive"))
+            end
+            if abs(turns_per_coil * coils_in_series_per_phase - N_s) > 1.0e-8 * max(abs(N_s), 1.0)
+                throw(ArgumentError("turns_per_coil * coils_in_series_per_phase must equal turns_per_phase"))
+            end
+            if coil_mutual_coupling < -inv(coils_in_series_per_phase - 1 + 1.0e-12)
+                throw(ArgumentError("coil_mutual_coupling makes the phase magnetizing inductance negative"))
+            end
+            if phase_leakage_inductance < 0
+                throw(ArgumentError("phase_leakage_inductance must be nonnegative"))
+            end
+            coil_self_inductance = mu_0 * k_wd^2 * turns_per_coil^2 * inductance_coil_area / g_eff
+            mutual_factor = 1 + coil_mutual_coupling * (coils_in_series_per_phase - 1)
+            L_m = coils_in_series_per_phase * coil_self_inductance * mutual_factor
+            L_s_calc = L_m + phase_leakage_inductance
+            L_s = L_s_calc
+        else
+            throw(ArgumentError("inductance_model must be :legacy_distributed or :concentrated_coreless"))
+        end
+    else
+        L_s = phase_inductance
+    end
 
     flux_area_width_factor = halbach_field_model == :finite_width_harmonic ? 1.0 : ratio_mw2pp
     flux_area = effective_flux_area === nothing ? area_ag / (2 * p) * flux_area_width_factor : effective_flux_area
-    phi_air = B_g * flux_area
-    E_p = 4.44 * f * N_s * k_wd * phi_air
+    lambda_phase = if phase_flux_linkage === nothing
+        if flux_linkage_factor <= 0
+            throw(ArgumentError("flux_linkage_factor must be positive"))
+        end
+        N_s * k_wd * B_g * flux_area * flux_linkage_factor
+    else
+        phase_flux_linkage
+    end
+    E_p = 4.44 * f * lambda_phase
 
     Z = machine_rating / (m * E_p)
     if convergefaster
@@ -208,7 +309,7 @@ function PMSG_axial_Halbach(
     else
         I_s = sqrt(Z^2 + ((E_p - sqrt(G)) / (om_e * L_s))^2)
     end
-    J_s = I_s / A_Cuscalc
+    J_s = I_s / (A_Cuscalc * (physical_winding_path ? parallel_paths : 1.0))
     A_1 = 6 * N_s * I_s / (pi * 2 * Rm)
 
     B_smax = sqrt(2) * I_s * mu_0 / g_eff

@@ -1013,6 +1013,94 @@ end
         effective_flux_area=annulus_flux_area,
         backiron_fraction=0.5)
 
+    awg22_area = pi / 4 * (0.005 * 0.0254 * 92^((36 - 22) / 39))^2
+    mean_turn_length = 0.076266
+    copper_resistivity_20c = 1.724e-8
+    hb_awg = GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p,
+        m,
+        q1,
+        turns_per_phase=84.0,
+        wire_gauge_awg=22.0,
+        mean_turn_length,
+        resist_Cu=copper_resistivity_20c,
+        phase_inductance=102.2e-6,
+        backiron_fraction=0.5)
+    hb_area = GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p,
+        m,
+        q1,
+        turns_per_phase=84.0,
+        conductor_area=awg22_area,
+        mean_turn_length,
+        resist_Cu=copper_resistivity_20c,
+        phase_inductance=102.2e-6,
+        backiron_fraction=0.5)
+    coil_inner_radius = 0.035
+    coil_outer_radius = 0.065
+    coil_span_angle = 9.32 * pi / 180
+    support_mean_turn_length = 2 * (coil_outer_radius - coil_inner_radius) +
+        coil_span_angle * (coil_inner_radius + coil_outer_radius)
+    hb_support_geometry = GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p,
+        m,
+        q1,
+        turns_per_phase=84.0,
+        conductor_area=awg22_area,
+        coil_inner_radius,
+        coil_outer_radius,
+        coil_span_angle,
+        resist_Cu=copper_resistivity_20c,
+        phase_inductance=102.2e-6,
+        backiron_fraction=0.5)
+    hb_concentrated_no_leakage = GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p,
+        m,
+        q1,
+        turns_per_phase=84.0,
+        phase_resistance=0.34,
+        inductance_model=:concentrated_coreless,
+        turns_per_coil=14.0,
+        coils_in_series_per_phase=6.0,
+        inductance_coil_area=3.49e-4,
+        backiron_fraction=0.5)
+    explicit_leakage = 68.0e-6
+    hb_concentrated = GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p,
+        m,
+        q1,
+        turns_per_phase=84.0,
+        phase_resistance=0.34,
+        inductance_model=:concentrated_coreless,
+        turns_per_coil=14.0,
+        coils_in_series_per_phase=6.0,
+        inductance_coil_area=3.49e-4,
+        phase_leakage_inductance=explicit_leakage,
+        backiron_fraction=0.5)
+    hb_flux_factor = GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p, m, q1, flux_linkage_factor=0.5, backiron_fraction=0.5)
+    hb_flux_density = GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p, m, q1, airgap_flux_density=0.079, backiron_fraction=0.5)
+    explicit_phase_linkage = 3.271e-3
+    hb_phase_linkage = GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p, m, q1, phase_flux_linkage=explicit_phase_linkage, backiron_fraction=0.5)
+
     @test p_base == p_hb
     @test isapprox(B_pm1_hb, expected_B_pm1; rtol=1e-12)
     @test isapprox(B_g_hb, B_pm1_hb; rtol=1e-12)
@@ -1043,6 +1131,30 @@ end
     @test isapprox(hb_explicit_winding[13], 4.44 * hb_explicit_winding[14] * 84.0 * 4.92e-4 * hb_explicit_winding[6]; rtol=1e-12)
     @test hb_explicit_winding[16] == 0.742
     @test hb_explicit_winding[17] == 102.2e-6
+    @test isapprox(hb_awg[10], awg22_area * 1e6; rtol=1e-12)
+    @test isapprox(hb_awg[16], copper_resistivity_20c * 84 * mean_turn_length / awg22_area; rtol=1e-12)
+    @test isapprox(hb_area[16], hb_awg[16]; rtol=1e-12)
+    @test isapprox(
+        hb_support_geometry[16],
+        copper_resistivity_20c * 84 * support_mean_turn_length / awg22_area;
+        rtol=1e-12,
+    )
+    @test isapprox(hb_concentrated[17] - hb_concentrated_no_leakage[17], explicit_leakage; rtol=1e-12)
+    @test isapprox(hb_flux_factor[13], 0.5 * hb_vals[13]; rtol=1e-12)
+    @test hb_flux_density[6] == 0.079
+    @test isapprox(hb_phase_linkage[13], 4.44 * hb_phase_linkage[14] * explicit_phase_linkage; rtol=1e-12)
+    @test_throws ArgumentError GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p, m, q1, conductor_area=0.0, backiron_fraction=0.5)
+    @test_throws ArgumentError GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p, m, q1, coil_inner_radius=0.035, backiron_fraction=0.5)
+    @test_throws ArgumentError GeneratorSE.PMSG_axial_Halbach(
+        r_in,r_out,h_s,tau_p,h_m,h_ys,h_yr,machine_rating,shaft_rpm,Torque,b_st,d_s,
+        t_ws,n_r,n_s,b_r,d_r,t_wr,D_shaft,rho_Fe,rho_Copper,rho_Fes,rho_PM;
+        alpha_p, m, q1, inductance_model=:unsupported, backiron_fraction=0.5)
 end
 
 @testset "GeneratorSE PMSG_outer" begin
