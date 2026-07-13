@@ -48,20 +48,42 @@ the following precedence:
    `coil_inner_radius`, `coil_outer_radius`, and `coil_span_angle`; and
 3. the legacy slot-fill estimate when none of those inputs is supplied.
 
-`phase_lead_length`, `parallel_paths`, and the existing `resist_Cu` input make
-the remaining resistance assumptions explicit. `mean_turn_length` is the full
-length of one turn, not one coil side.
+`phase_lead_length`, `phase_joint_resistance`, `parallel_paths`,
+`copper_resistivity_20c`, and `copper_temperature_c` make the remaining
+resistance assumptions explicit. `mean_turn_length` is the full length of one
+turn, not one coil side. When insulated wire diameter, turns per layer, and the
+support geometry are all supplied, the resistance path follows the individual
+nested turns rather than multiplying one mean perimeter.
 Wire area and turn geometry may be supplied independently; an omitted quantity
 uses the model's internal winding-geometry or slot-fill assumption.
 
 Inductance similarly uses `phase_inductance` first. Otherwise,
+`inductance_model=:coreless_filament` uses the individual round-wire paths and
+the Neumann self/mutual integral. It requires `wire_outer_diameter`,
+`turns_per_layer`, coil support geometry, `turns_per_coil`, and
+`coils_in_series_per_phase`; `inductance_path_subdivisions` controls numerical
+convergence. It is a free-space winding calculation. Add
+`phase_lead_inductance` only from an independent calculation or measurement.
+It does not invent a slotted-machine leakage term.
+
+The lower-fidelity
 `inductance_model=:concentrated_coreless` requires `turns_per_coil`,
 `coils_in_series_per_phase`, and `inductance_coil_area`; optional mutual and
 leakage assumptions are supplied with `coil_mutual_coupling` and
 `phase_leakage_inductance`. Omitting these inputs preserves the legacy
 distributed-winding estimate.
 
-Flux linkage can use an explicit `phase_flux_linkage`, or an
+For a real segmented single rotor, `halbach_field_model=:segmented_cuboid`
+represents every uniformly magnetized block by the closed-form field of its
+rectangular bound surface charges and
+integrates the field over the packed turn apertures through a rotor period.
+Provide the actual magnet count, dimensions/coverage, remanence, magnetization
+rotation, mechanical gap, winding-center offset, and coil/wire layout. This
+free-space model includes finite block dimensions and turn linking, but not
+magnetic backing, non-unity recoil permeability, adhesive/placement tolerances,
+or demagnetization; those require a validated subdomain model or 3-D FEA.
+
+Flux linkage can also use an explicit `phase_flux_linkage`, or an
 `airgap_flux_density` with `effective_flux_area`, `winding_factor`, and
 `flux_linkage_factor`. Here `effective_flux_area` means the field-weighted area
 linked by one coil/pole, not necessarily the gross coil envelope. If no explicit

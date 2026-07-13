@@ -1,7 +1,10 @@
 module GeneratorSE
 import FLOWMath
 path = splitdir(@__FILE__)[1]
-export PMSG_arms, PMSG_axial, PMSG_axial_Halbach, PMSG_dynamics, PMSG_dynamics_params, generator_costing_complex, generator_costing_simple#, PMSG_outer
+export PMSG_arms, PMSG_axial, PMSG_axial_Halbach, PMSG_dynamics, PMSG_dynamics_params,
+       copper_resistivity_at_temperature, coreless_winding_inductance,
+       segmented_halbach_winding_properties,
+       generator_costing_complex, generator_costing_simple#, PMSG_outer
 
 const _GENERATORSE_SMOOTH_DELTA = 1.0e-9
 

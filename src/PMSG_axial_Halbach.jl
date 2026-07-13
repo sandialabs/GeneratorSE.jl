@@ -14,6 +14,519 @@ function _awg_conductor_area(awg)
     return pi * diameter_m^2 / 4
 end
 
+"""
+    copper_resistivity_at_temperature(rho_20, temperature_c; alpha_20=0.00393)
+
+Return copper resistivity at `temperature_c` from a 20 °C reference.  The
+default temperature coefficient is the International Annealed Copper Standard
+value for annealed winding wire near 20 °C.
+"""
+function copper_resistivity_at_temperature(rho_20, temperature_c; alpha_20 = 0.00393)
+    return rho_20 * (1 + alpha_20 * (temperature_c - 20))
+end
+
+function _gauss_legendre(order)
+    if order == 2
+        a = inv(sqrt(3.0))
+        return (-a, a), (1.0, 1.0)
+    elseif order == 3
+        a = sqrt(3 / 5)
+        return (-a, 0.0, a), (5 / 9, 8 / 9, 5 / 9)
+    elseif order == 4
+        return (
+            -0.8611363115940526,
+            -0.3399810435848563,
+            0.3399810435848563,
+            0.8611363115940526,
+        ), (
+            0.3478548451374538,
+            0.6521451548625461,
+            0.6521451548625461,
+            0.3478548451374538,
+        )
+    elseif order == 6
+        return (
+            -0.9324695142031521,
+            -0.6612093864662645,
+            -0.2386191860831969,
+            0.2386191860831969,
+            0.6612093864662645,
+            0.9324695142031521,
+        ), (
+            0.1713244923791704,
+            0.3607615730481386,
+            0.4679139345726910,
+            0.4679139345726910,
+            0.3607615730481386,
+            0.1713244923791704,
+        )
+    end
+    throw(ArgumentError("quadrature order must be 2, 3, 4, or 6"))
+end
+
+_vadd(a, b) = (a[1] + b[1], a[2] + b[2], a[3] + b[3])
+_vscale(a, s) = (a[1] * s, a[2] * s, a[3] * s)
+_vdot(a, b) = a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+
+_vcross(a, b) = (
+    a[2] * b[3] - a[3] * b[2],
+    a[3] * b[1] - a[1] * b[3],
+    a[1] * b[2] - a[2] * b[1],
+)
+
+function _append_magnetic_charge_face!(sources, center, axis_u, axis_v, length_u, length_v, charge_fraction, B_r)
+    abs(charge_fraction) <= 1.0e-14 && return sources
+    push!(sources, (
+        center = center,
+        axis_u = axis_u,
+        axis_v = axis_v,
+        half_u = length_u / 2,
+        half_v = length_v / 2,
+        coefficient = B_r * charge_fraction / (4 * pi),
+    ))
+    return sources
+end
+
+function _rectangular_charge_face_Bz(point, face)
+    # Closed-form electric/gravitational field integral for a uniformly
+    # charged rectangle, here multiplied by Br/(4*pi) to obtain B.  The local
+    # coordinates are right-handed (u, v, n=u×v).  Using asinh for the
+    # in-plane components avoids cancellation in log(v + R) near an edge.
+    axis_n = _vcross(face.axis_u, face.axis_v)
+    offset = (
+        point[1] - face.center[1],
+        point[2] - face.center[2],
+        point[3] - face.center[3],
+    )
+    x = _vdot(offset, face.axis_u)
+    y = _vdot(offset, face.axis_v)
+    z = _vdot(offset, axis_n)
+    us = (x + face.half_u, x - face.half_u)
+    vs = (y + face.half_v, y - face.half_v)
+    signs = (one(x), -one(x))
+    integral_u = zero(x)
+    integral_v = zero(x)
+    integral_n = zero(x)
+    for i in 1:2, j in 1:2
+        u = us[i]
+        v = vs[j]
+        sign = signs[i] * signs[j]
+        radius = sqrt(u * u + v * v + z * z)
+        integral_u -= sign * asinh(v / sqrt(u * u + z * z))
+        integral_v -= sign * asinh(u / sqrt(v * v + z * z))
+        if abs(axis_n[3]) > 1.0e-14
+            integral_n += sign * atan(u * v / (z * radius))
+        end
+    end
+    return face.coefficient * (
+        integral_u * face.axis_u[3] +
+        integral_v * face.axis_v[3] +
+        integral_n * axis_n[3]
+    )
+end
+
+"""
+    segmented_halbach_winding_properties(; kwargs...)
+
+Calculate the free-space field and phase fundamental flux linkage of a
+single-rotor segmented axial Halbach array.  Each uniformly magnetized cuboid
+is represented by the closed-form field of its rectangular bound magnetic
+surface charges.
+The field is integrated over the actual annular-sector coil apertures at a set
+of rotor positions; the phase fundamental is then obtained by Fourier
+projection.  This replaces the lumped `B*A*N*k_w` approximation when selected
+from `PMSG_axial_Halbach` with `halbach_field_model=:segmented_cuboid`.
+When `wire_outer_diameter` and `turns_per_layer` are supplied, every nested
+turn aperture and axial layer is integrated separately; otherwise the supplied
+coil aperture is multiplied by `turns_per_coil`.
+
+The standard sequence is `+z, -tangential, -z, +tangential`, matching a
+four-step Halbach array whose strong side is above the rotor.  Back iron and
+non-unity recoil permeability are not included; use 3-D FEA or an appropriate
+subdomain model when those effects are material.
+"""
+function segmented_halbach_winding_properties(;
+    pole_pairs,
+    magnet_inner_radius,
+    magnet_outer_radius,
+    magnet_thickness,
+    magnet_tangential_width,
+    magnets_total,
+    B_r,
+    winding_plane_offset,
+    coil_inner_radius,
+    coil_outer_radius,
+    coil_span_angle,
+    turns_per_coil,
+    coils_in_series_per_phase,
+    phase_coil_offset = 0.0,
+    wire_outer_diameter = nothing,
+    turns_per_layer = nothing,
+    turn_pitch = nothing,
+    layer_pitch = nothing,
+    winding_geometry_reference = :mean_turn,
+    magnetization_rotation = -1.0,
+    coil_quadrature_order = 6,
+    rotor_samples = 48,
+)
+    p = pole_pairs
+    n_magnets = Int(round(magnets_total))
+    n_coils = Int(round(coils_in_series_per_phase))
+    n_samples = Int(round(rotor_samples))
+    if n_magnets < 4 || n_coils < 1 || n_samples < 8
+        throw(ArgumentError("segmented Halbach model requires at least 4 magnets, 1 phase coil, and 8 rotor samples"))
+    end
+    if magnet_outer_radius <= magnet_inner_radius || magnet_thickness <= 0 || magnet_tangential_width <= 0
+        throw(ArgumentError("magnet dimensions must be positive and ordered"))
+    end
+    if coil_outer_radius <= coil_inner_radius || coil_inner_radius < 0 || coil_span_angle <= 0
+        throw(ArgumentError("coil annular-sector geometry must be positive and ordered"))
+    end
+    if winding_plane_offset <= 0 || turns_per_coil <= 0
+        throw(ArgumentError("winding-plane offset and turns per coil must be positive"))
+    end
+
+    T = promote_type(
+        typeof(p), typeof(magnet_inner_radius), typeof(magnet_outer_radius),
+        typeof(magnet_thickness), typeof(magnet_tangential_width), typeof(B_r),
+        typeof(winding_plane_offset), typeof(coil_inner_radius),
+        typeof(coil_outer_radius), typeof(coil_span_angle), typeof(turns_per_coil),
+        typeof(phase_coil_offset), typeof(magnetization_rotation), Float64,
+    )
+    Face = NamedTuple{
+        (:center, :axis_u, :axis_v, :half_u, :half_v, :coefficient),
+        Tuple{NTuple{3,T},NTuple{3,T},NTuple{3,T},T,T,T},
+    }
+    sources = Face[]
+    radius = convert(T, 0.5) * (magnet_inner_radius + magnet_outer_radius)
+    radial_length = magnet_outer_radius - magnet_inner_radius
+    z_center = -convert(T, 0.5) * magnet_thickness
+    two_pi = convert(T, 2 * pi)
+
+    for j = 0:(n_magnets - 1)
+        theta = two_pi * convert(T, j) / convert(T, n_magnets)
+        er = (cos(theta), sin(theta), zero(T))
+        et = (-sin(theta), cos(theta), zero(T))
+        ez = (zero(T), zero(T), one(T))
+        center = (radius * er[1], radius * er[2], z_center)
+
+        magnetization_phase = two_pi * p * convert(T, j) / convert(T, n_magnets)
+        m_t = magnetization_rotation * sin(magnetization_phase)
+        m_z = cos(magnetization_phase)
+
+        for face_sign in (-1, 1)
+            s = convert(T, face_sign)
+            tangential_center = _vadd(center, _vscale(et, s * magnet_tangential_width / 2))
+            _append_magnetic_charge_face!(
+                sources, tangential_center, er, ez, radial_length, magnet_thickness,
+                s * m_t, B_r,
+            )
+            axial_center = _vadd(center, _vscale(ez, s * magnet_thickness / 2))
+            _append_magnetic_charge_face!(
+                sources, axial_center, er, et, radial_length, magnet_tangential_width,
+                s * m_z, B_r,
+            )
+        end
+    end
+
+    function Bz_at(r, theta)
+        x = r * cos(theta)
+        y = r * sin(theta)
+        z = winding_plane_offset
+        Bz = zero(T)
+        for source in sources
+            Bz += _rectangular_charge_face_Bz((x, y, z), source)
+        end
+        return Bz
+    end
+
+    packed_turns = if wire_outer_diameter !== nothing || turns_per_layer !== nothing
+        if wire_outer_diameter === nothing || turns_per_layer === nothing
+            throw(ArgumentError("wire_outer_diameter and turns_per_layer must be provided together"))
+        end
+        _wedge_turn_geometries(
+            coil_inner_radius,
+            coil_outer_radius,
+            coil_span_angle,
+            turns_per_coil,
+            turns_per_layer,
+            turn_pitch === nothing ? wire_outer_diameter : turn_pitch,
+            layer_pitch === nothing ? wire_outer_diameter : layer_pitch,
+            winding_geometry_reference,
+        )
+    else
+        nothing
+    end
+
+    coil_nodes, coil_weights = _gauss_legendre(coil_quadrature_order)
+    function coil_flux(center_angle, r_inner, r_outer, span, z_offset)
+        flux = zero(T)
+        radial_jacobian = (r_outer - r_inner) / 2
+        angular_jacobian = span / 2
+        radial_center = (r_outer + r_inner) / 2
+        for (xr, wr) in zip(coil_nodes, coil_weights), (xt, wt) in zip(coil_nodes, coil_weights)
+            r = radial_center + radial_jacobian * xr
+            theta = center_angle + angular_jacobian * xt
+            # Axial layers see slightly different field.  Re-evaluate the
+            # magnetic surface-charge sum at the center plane of each turn.
+            x = r * cos(theta)
+            y = r * sin(theta)
+            z = winding_plane_offset + z_offset
+            Bz = zero(T)
+            for source in sources
+                Bz += _rectangular_charge_face_Bz((x, y, z), source)
+            end
+            flux += Bz * r * radial_jacobian * angular_jacobian * wr * wt
+        end
+        return flux
+    end
+
+    rotor_angles = Vector{T}(undef, n_samples)
+    linkage = Vector{T}(undef, n_samples)
+    field = Vector{T}(undef, n_samples)
+    coil_pitch = two_pi / convert(T, n_coils)
+    for sample = 1:n_samples
+        rotor_angle = two_pi * convert(T, sample - 1) / (p * convert(T, n_samples))
+        rotor_angles[sample] = rotor_angle
+        phase_flux = zero(T)
+        for coil = 0:(n_coils - 1)
+            coil_angle = phase_coil_offset + convert(T, coil) * coil_pitch - rotor_angle
+            if packed_turns === nothing
+                phase_flux += turns_per_coil * coil_flux(
+                    coil_angle,
+                    coil_inner_radius,
+                    coil_outer_radius,
+                    coil_span_angle,
+                    zero(T),
+                )
+            else
+                for turn in packed_turns
+                    phase_flux += coil_flux(coil_angle, turn.r_in, turn.r_out, turn.span, turn.z)
+                end
+            end
+        end
+        linkage[sample] = phase_flux
+        field[sample] = Bz_at(radius, phase_coil_offset - rotor_angle)
+    end
+
+    lambda_cos = zero(T)
+    lambda_sin = zero(T)
+    field_cos = zero(T)
+    field_sin = zero(T)
+    for sample = 1:n_samples
+        electrical_angle = p * rotor_angles[sample]
+        c = cos(electrical_angle)
+        s = sin(electrical_angle)
+        lambda_cos += linkage[sample] * c
+        lambda_sin += linkage[sample] * s
+        field_cos += field[sample] * c
+        field_sin += field[sample] * s
+    end
+    scale = convert(T, 2) / convert(T, n_samples)
+    lambda_fundamental = hypot(scale * lambda_cos, scale * lambda_sin)
+    field_fundamental = hypot(scale * field_cos, scale * field_sin)
+
+    return (
+        B_fundamental = field_fundamental,
+        B_peak_at_mean_radius = maximum(abs, field),
+        phase_flux_linkage_fundamental = lambda_fundamental,
+        rotor_angles = rotor_angles,
+        phase_flux_linkage = linkage,
+        mean_radius_field = field,
+        magnetic_charge_sources = length(sources),
+        packed_turn_geometry = packed_turns !== nothing,
+    )
+end
+
+function _wedge_turn_geometries(
+    coil_inner_radius,
+    coil_outer_radius,
+    coil_span_angle,
+    turns_per_coil,
+    turns_per_layer,
+    turn_pitch,
+    layer_pitch,
+    geometry_reference,
+)
+    n_turns = Int(round(turns_per_coil))
+    n_per_layer = Int(round(turns_per_layer))
+    if n_turns < 1 || n_per_layer < 1 || turn_pitch <= 0 || layer_pitch <= 0
+        throw(ArgumentError("turn count, turns per layer, and winding pitches must be positive"))
+    end
+    n_layers = cld(n_turns, n_per_layer)
+    radius_mean = (coil_inner_radius + coil_outer_radius) / 2
+    T = promote_type(
+        typeof(coil_inner_radius), typeof(coil_outer_radius), typeof(coil_span_angle),
+        typeof(turn_pitch), typeof(layer_pitch), Float64,
+    )
+    geometries = NamedTuple[]
+    for turn = 0:(n_turns - 1)
+        layer = fld(turn, n_per_layer)
+        slot = mod(turn, n_per_layer)
+        turns_this_layer = min(n_per_layer, n_turns - layer * n_per_layer)
+        inplane_offset = if geometry_reference == :mean_turn
+            (convert(T, slot) - convert(T, turns_this_layer - 1) / 2) * turn_pitch
+        elseif geometry_reference == :inner_support
+            (convert(T, slot) + convert(T, 0.5)) * turn_pitch
+        else
+            throw(ArgumentError("winding_geometry_reference must be :mean_turn or :inner_support"))
+        end
+        axial_offset = (convert(T, layer) - convert(T, n_layers - 1) / 2) * layer_pitch
+        r_in = coil_inner_radius - inplane_offset
+        r_out = coil_outer_radius + inplane_offset
+        span = coil_span_angle + 2 * inplane_offset / radius_mean
+        if r_in <= 0 || r_out <= r_in || span <= 0
+            throw(ArgumentError("wire packing creates an invalid turn geometry"))
+        end
+        push!(geometries, (r_in = r_in, r_out = r_out, span = span, z = axial_offset))
+    end
+    return geometries
+end
+
+_wedge_turn_length(turn) = 2 * (turn.r_out - turn.r_in) + turn.span * (turn.r_in + turn.r_out)
+
+function _append_line_elements!(elements, p0, p1, conductor, subdivisions)
+    n = Int(round(subdivisions))
+    for k = 0:(n - 1)
+        a = k / n
+        b = (k + 1) / n
+        start = (
+            p0[1] + a * (p1[1] - p0[1]),
+            p0[2] + a * (p1[2] - p0[2]),
+            p0[3] + a * (p1[3] - p0[3]),
+        )
+        stop = (
+            p0[1] + b * (p1[1] - p0[1]),
+            p0[2] + b * (p1[2] - p0[2]),
+            p0[3] + b * (p1[3] - p0[3]),
+        )
+        dl = (stop[1] - start[1], stop[2] - start[2], stop[3] - start[3])
+        midpoint = ((start[1] + stop[1]) / 2, (start[2] + stop[2]) / 2, (start[3] + stop[3]) / 2)
+        push!(elements, (r = midpoint, dl = dl, conductor = conductor))
+    end
+    return elements
+end
+
+function _append_arc_elements!(elements, radius, theta0, theta1, z, conductor, subdivisions)
+    n = Int(round(subdivisions))
+    for k = 0:(n - 1)
+        a0 = theta0 + (theta1 - theta0) * k / n
+        a1 = theta0 + (theta1 - theta0) * (k + 1) / n
+        p0 = (radius * cos(a0), radius * sin(a0), z)
+        p1 = (radius * cos(a1), radius * sin(a1), z)
+        _append_line_elements!(elements, p0, p1, conductor, 1)
+    end
+    return elements
+end
+
+function _append_wedge_loop_elements!(elements, turn, center_angle, conductor, subdivisions)
+    half_span = turn.span / 2
+    theta_low = center_angle - half_span
+    theta_high = center_angle + half_span
+    p_inner_low = (turn.r_in * cos(theta_low), turn.r_in * sin(theta_low), turn.z)
+    p_outer_low = (turn.r_out * cos(theta_low), turn.r_out * sin(theta_low), turn.z)
+    p_outer_high = (turn.r_out * cos(theta_high), turn.r_out * sin(theta_high), turn.z)
+    p_inner_high = (turn.r_in * cos(theta_high), turn.r_in * sin(theta_high), turn.z)
+    _append_line_elements!(elements, p_inner_low, p_outer_low, conductor, subdivisions)
+    _append_arc_elements!(elements, turn.r_out, theta_low, theta_high, turn.z, conductor, subdivisions)
+    _append_line_elements!(elements, p_outer_high, p_inner_high, conductor, subdivisions)
+    _append_arc_elements!(elements, turn.r_in, theta_high, theta_low, turn.z, conductor, subdivisions)
+    return elements
+end
+
+"""
+    coreless_winding_inductance(; kwargs...)
+
+Calculate a phase inductance from the Neumann partial-inductance integral over
+the actual series-connected air-core turn paths.  Individual nested turns,
+axial layers, finite round-wire self terms, and mutual coupling among all
+same-phase coils are included.  The result excludes leads and magnetic backing;
+an independently calculated lead/backing contribution can be added explicitly.
+"""
+function coreless_winding_inductance(;
+    coil_inner_radius,
+    coil_outer_radius,
+    coil_span_angle,
+    turns_per_coil,
+    coils_in_series_per_phase,
+    wire_diameter,
+    turns_per_layer,
+    turn_pitch = wire_diameter,
+    layer_pitch = wire_diameter,
+    winding_geometry_reference = :mean_turn,
+    path_subdivisions = 12,
+    phase_lead_inductance = 0.0,
+    mu_0 = 4 * pi * 1.0e-7,
+)
+    if wire_diameter <= 0 || phase_lead_inductance < 0
+        throw(ArgumentError("wire diameter must be positive and lead inductance nonnegative"))
+    end
+    turns = _wedge_turn_geometries(
+        coil_inner_radius, coil_outer_radius, coil_span_angle, turns_per_coil,
+        turns_per_layer, turn_pitch, layer_pitch, winding_geometry_reference,
+    )
+    n_coils = Int(round(coils_in_series_per_phase))
+    n_coils < 1 && throw(ArgumentError("coils in series per phase must be positive"))
+    T = promote_type(
+        typeof(coil_inner_radius), typeof(coil_outer_radius), typeof(coil_span_angle),
+        typeof(wire_diameter), typeof(mu_0), Float64,
+    )
+    Element = NamedTuple{(:r, :dl, :conductor),Tuple{NTuple{3,T},NTuple{3,T},Int}}
+    elements = Element[]
+    conductor = 0
+    for coil = 0:(n_coils - 1)
+        center_angle = 2 * pi * coil / n_coils
+        for turn in turns
+            conductor += 1
+            _append_wedge_loop_elements!(elements, turn, center_angle, conductor, path_subdivisions)
+        end
+    end
+
+    gmd_radius = 0.5 * wire_diameter * exp(-0.25)
+    coefficient = mu_0 / (4 * pi)
+    L = zero(T)
+    for i in eachindex(elements)
+        ei = elements[i]
+        length_dl = sqrt(_vdot(ei.dl, ei.dl))
+        self_double_integral = 2 * (
+            length_dl * asinh(length_dl / gmd_radius) -
+            sqrt(length_dl^2 + gmd_radius^2) + gmd_radius
+        )
+        L += coefficient * self_double_integral
+        for j = (i + 1):length(elements)
+            ej = elements[j]
+            dot_dl = _vdot(ei.dl, ej.dl)
+            dx = ei.r[1] - ej.r[1]
+            dy = ei.r[2] - ej.r[2]
+            dz = ei.r[3] - ej.r[3]
+            # The GMD regularization used in the analytic self-element term
+            # must also span adjacent pieces of the same physical conductor.
+            # Otherwise progressively shorter elements eventually sample the
+            # 1/R filament singularity inside the wire and the result drifts
+            # with path subdivision.  Distinct conductors retain the ordinary
+            # filament mutual-inductance kernel; their centerlines do not
+            # overlap when the packing checks above are satisfied.
+            distance2 = dx * dx + dy * dy + dz * dz
+            distance = ei.conductor == ej.conductor ?
+                sqrt(distance2 + gmd_radius^2) : sqrt(distance2)
+            # The Neumann double integral is symmetric in the two line
+            # elements; evaluate one triangle and account for its transpose.
+            L += 2 * coefficient * dot_dl / distance
+        end
+    end
+    phase_turn_length = n_coils * sum(_wedge_turn_length(turn) for turn in turns)
+    return (
+        phase_inductance = L + phase_lead_inductance,
+        winding_inductance = L,
+        phase_lead_inductance = phase_lead_inductance,
+        phase_turn_length = phase_turn_length,
+        turns_per_layer = turns_per_layer,
+        axial_layers = cld(Int(round(turns_per_coil)), Int(round(turns_per_layer))),
+        conductor_loops = conductor,
+        line_elements = length(elements),
+    )
+end
+
 function _halbach_segmentation_factor(segment_count, magnet_width_ratio, field_model)
     x_segment = pi / (2 * segment_count)
 
@@ -77,8 +590,12 @@ function PMSG_axial_Halbach(
     len_ag = 0.00075 * (r_in + r_out),
     B_r = 1.2,
     halbach_flux_boost = 1.0,          # optional calibration multiplier, unity by default
-    halbach_field_model = :ideal_sheet,# :ideal_sheet preserves legacy behavior; :finite_width_harmonic applies magnet coverage
+    halbach_field_model = :ideal_sheet,# :ideal_sheet, :finite_width_harmonic, or geometry-based :segmented_cuboid
     halbach_segments_per_pole = 4,     # magnetization steps per pole; larger approaches continuous Halbach
+    halbach_magnets_total = nothing,   # explicit block count for :segmented_cuboid; defaults to 2*p*segments_per_pole
+    halbach_magnetization_rotation = -1.0, # standard +z,-t,-z,+t sequence when negative
+    halbach_coil_quadrature_order = 6,
+    halbach_rotor_samples = 48,
     halbach_field_eval_offset = 0.0,   # extra distance from mechanical air gap to the winding/field evaluation plane [m]
     halbach_end_effect_factor = 1.0,   # finite-radius/end-effect derating when known from FEM or tests
     halbach_weak_side_fraction = 0.05, # residual weak-side flux crossing rotor back iron
@@ -90,18 +607,30 @@ function PMSG_axial_Halbach(
     phase_inductance = nothing,        # measured or externally calculated phase inductance [H]
     wire_gauge_awg = nothing,          # bare round-wire AWG; used only when conductor_area is omitted
     conductor_area = nothing,          # bare area of one conductor/path [m^2]; overrides wire_gauge_awg
+    wire_outer_diameter = nothing,     # insulated winding-wire diameter [m]; required for physical turn packing
+    turns_per_layer = nothing,         # in-plane nested turns before starting a new axial layer
+    turn_pitch = nothing,              # in-plane center spacing [m]; defaults to wire_outer_diameter
+    layer_pitch = nothing,             # axial layer center spacing [m]; defaults to wire_outer_diameter
+    winding_geometry_reference = :mean_turn, # :mean_turn or :inner_support
     mean_turn_length = nothing,         # full conductor length of one turn [m]
     coil_inner_radius = nothing,       # optional trapezoid inner radius for mean-turn calculation [m]
     coil_outer_radius = nothing,       # optional trapezoid outer radius for mean-turn calculation [m]
     coil_span_angle = nothing,         # optional trapezoid angular span for mean-turn calculation [rad]
     phase_lead_length = 0.0,           # additional series conductor length per phase path [m]
+    phase_joint_resistance = 0.0,      # terminals/splices in one phase path [Ohm]
     parallel_paths = 1.0,              # equal electrical paths in parallel within one phase
-    inductance_model = :legacy_distributed, # or :concentrated_coreless
+    copper_resistivity_20c = nothing,  # when supplied, temperature-corrected instead of using resist_Cu
+    copper_temperature_c = 20.0,
+    copper_temperature_coefficient = 0.00393,
+    inductance_model = :legacy_distributed, # :concentrated_coreless or physical :coreless_filament
     turns_per_coil = nothing,          # required for :concentrated_coreless
     coils_in_series_per_phase = nothing,# required for :concentrated_coreless
     inductance_coil_area = nothing,    # linked area of one concentrated coil [m^2]
     coil_mutual_coupling = 0.0,        # equal-pair mutual/self sensitivity; zero means uncoupled coils
     phase_leakage_inductance = 0.0,    # explicit phase leakage addition for concentrated model [H]
+    phase_lead_inductance = 0.0,       # explicit lead contribution for :coreless_filament [H]
+    inductance_path_subdivisions = 12,
+    phase_coil_offset = 0.0,
     flux_linkage_factor = 1.0,         # spatial/3-D linked-flux factor; scales phi/E but not reported B_g
     airgap_flux_density = nothing,     # explicit fundamental winding-plane B [T]; overrides the Halbach field estimate
     phase_flux_linkage = nothing,      # explicit peak phase linkage [Wb-turn]; highest-priority flux input
@@ -170,7 +699,44 @@ function PMSG_axial_Halbach(
 
     h_yr_safe = _smooth_max(h_yr_eff, 1.0e-6)
     rotor_count = dual_rotor ? 2 : 1
-    B_pm1 = halbach_fundamental_flux_density(
+    spatial_halbach = if halbach_field_model == :segmented_cuboid
+        if dual_rotor
+            throw(ArgumentError(":segmented_cuboid currently represents a single free-space rotor; dual_rotor must be false"))
+        end
+        if coil_inner_radius === nothing || coil_outer_radius === nothing || coil_span_angle === nothing ||
+           turns_per_coil === nothing || coils_in_series_per_phase === nothing
+            throw(ArgumentError(":segmented_cuboid requires coil geometry, turns_per_coil, and coils_in_series_per_phase"))
+        end
+        magnets_total_use = halbach_magnets_total === nothing ? 2 * p * halbach_segments_per_pole : halbach_magnets_total
+        magnet_width = ratio_mw2pp * tau_p / halbach_segments_per_pole
+        segmented_halbach_winding_properties(;
+            pole_pairs = p,
+            magnet_inner_radius = r_in,
+            magnet_outer_radius = r_out,
+            magnet_thickness = h_m,
+            magnet_tangential_width = magnet_width,
+            magnets_total = magnets_total_use,
+            B_r = B_r * halbach_flux_boost * halbach_end_effect_factor,
+            winding_plane_offset = len_ag + halbach_field_eval_offset,
+            coil_inner_radius,
+            coil_outer_radius,
+            coil_span_angle,
+            turns_per_coil,
+            coils_in_series_per_phase,
+            phase_coil_offset,
+            wire_outer_diameter,
+            turns_per_layer,
+            turn_pitch,
+            layer_pitch,
+            winding_geometry_reference,
+            magnetization_rotation = halbach_magnetization_rotation,
+            coil_quadrature_order = halbach_coil_quadrature_order,
+            rotor_samples = halbach_rotor_samples,
+        )
+    else
+        nothing
+    end
+    B_pm1 = spatial_halbach === nothing ? halbach_fundamental_flux_density(
         B_r,
         h_m,
         len_ag,
@@ -183,7 +749,7 @@ function PMSG_axial_Halbach(
         field_model = halbach_field_model,
         magnet_width_ratio = ratio_mw2pp,
         field_eval_offset = halbach_field_eval_offset,
-    )
+    ) : spatial_halbach.B_fundamental
     if airgap_flux_density !== nothing && airgap_flux_density <= 0
         throw(ArgumentError("airgap_flux_density must be positive"))
     end
@@ -214,14 +780,20 @@ function PMSG_axial_Halbach(
     if mean_turn_length !== nothing && mean_turn_length <= 0
         throw(ArgumentError("mean_turn_length must be positive"))
     end
-    if phase_lead_length < 0 || parallel_paths <= 0
-        throw(ArgumentError("phase_lead_length must be nonnegative and parallel_paths must be positive"))
+    if phase_lead_length < 0 || phase_joint_resistance < 0 || parallel_paths <= 0
+        throw(ArgumentError("lead length/joint resistance must be nonnegative and parallel_paths must be positive"))
     end
     if conductor_area !== nothing && conductor_area <= 0
         throw(ArgumentError("conductor_area must be positive"))
     end
     if wire_gauge_awg !== nothing && wire_gauge_awg < 0
         throw(ArgumentError("wire_gauge_awg must be nonnegative"))
+    end
+    if wire_outer_diameter !== nothing && wire_outer_diameter <= 0
+        throw(ArgumentError("wire_outer_diameter must be positive"))
+    end
+    if copper_resistivity_20c !== nothing && copper_resistivity_20c <= 0
+        throw(ArgumentError("copper_resistivity_20c must be positive"))
     end
 
     l_turn_physical = if mean_turn_length !== nothing
@@ -239,11 +811,38 @@ function PMSG_axial_Halbach(
     A_scalc = b_s * 1000 * (h_s - h_w) * 1000 * q1 * p
     A_Cus_legacy = A_s * k_fills / N_s
     A_Cuscalc_legacy = A_scalc * k_fills / N_s
-    phase_path_length = N_s * l_turn_physical + phase_lead_length
+    packed_turns = if turns_per_layer !== nothing && turns_per_coil !== nothing && coils_in_series_per_phase !== nothing &&
+                      geometry_input_count == 3 && wire_outer_diameter !== nothing
+        _wedge_turn_geometries(
+            coil_inner_radius,
+            coil_outer_radius,
+            coil_span_angle,
+            turns_per_coil,
+            turns_per_layer,
+            turn_pitch === nothing ? wire_outer_diameter : turn_pitch,
+            layer_pitch === nothing ? wire_outer_diameter : layer_pitch,
+            winding_geometry_reference,
+        )
+    else
+        nothing
+    end
+    phase_path_length = if packed_turns === nothing
+        N_s * l_turn_physical + phase_lead_length
+    else
+        coils_in_series_per_phase * sum(_wedge_turn_length(turn) for turn in packed_turns) + phase_lead_length
+    end
     l_Cus = physical_winding_path ? phase_path_length * parallel_paths : 2 * N_s * l_turn_legacy
     A_Cus = supplied_conductor_area === nothing ? A_Cus_legacy : supplied_conductor_area
     A_Cuscalc = supplied_conductor_area === nothing ? A_Cuscalc_legacy : supplied_conductor_area * 1.0e6
-    R_s_calc = physical_winding_path ? resist_Cu * phase_path_length / (A_Cus * parallel_paths) : l_Cus * resist_Cu / A_Cus
+    winding_resistivity = copper_resistivity_20c === nothing ? resist_Cu :
+        copper_resistivity_at_temperature(
+            copper_resistivity_20c,
+            copper_temperature_c;
+            alpha_20 = copper_temperature_coefficient,
+        )
+    R_s_calc = physical_winding_path ?
+        winding_resistivity * phase_path_length / (A_Cus * parallel_paths) + phase_joint_resistance :
+        l_Cus * winding_resistivity / A_Cus
     R_s = phase_resistance === nothing ? R_s_calc : phase_resistance
 
     L_m_legacy = mu_0 * k_wd^2 * N_s^2 * area_ag / (g_eff * p)
@@ -278,8 +877,34 @@ function PMSG_axial_Halbach(
             L_m = coils_in_series_per_phase * coil_self_inductance * mutual_factor
             L_s_calc = L_m + phase_leakage_inductance
             L_s = L_s_calc
+        elseif inductance_model == :coreless_filament
+            if turns_per_coil === nothing || coils_in_series_per_phase === nothing || turns_per_layer === nothing ||
+               wire_outer_diameter === nothing || geometry_input_count != 3
+                throw(ArgumentError(":coreless_filament requires coil geometry, turns/layer layout, and wire_outer_diameter"))
+            end
+            if abs(turns_per_coil * coils_in_series_per_phase - N_s) > 1.0e-8 * max(abs(N_s), 1.0)
+                throw(ArgumentError("turns_per_coil * coils_in_series_per_phase must equal turns_per_phase"))
+            end
+            inductance_result = coreless_winding_inductance(;
+                coil_inner_radius,
+                coil_outer_radius,
+                coil_span_angle,
+                turns_per_coil,
+                coils_in_series_per_phase,
+                wire_diameter = wire_outer_diameter,
+                turns_per_layer,
+                turn_pitch = turn_pitch === nothing ? wire_outer_diameter : turn_pitch,
+                layer_pitch = layer_pitch === nothing ? wire_outer_diameter : layer_pitch,
+                winding_geometry_reference,
+                path_subdivisions = inductance_path_subdivisions,
+                phase_lead_inductance,
+                mu_0,
+            )
+            L_m = inductance_result.winding_inductance
+            L_s_calc = inductance_result.phase_inductance
+            L_s = L_s_calc
         else
-            throw(ArgumentError("inductance_model must be :legacy_distributed or :concentrated_coreless"))
+            throw(ArgumentError("inductance_model must be :legacy_distributed, :concentrated_coreless, or :coreless_filament"))
         end
     else
         L_s = phase_inductance
@@ -291,7 +916,11 @@ function PMSG_axial_Halbach(
         if flux_linkage_factor <= 0
             throw(ArgumentError("flux_linkage_factor must be positive"))
         end
-        N_s * k_wd * B_g * flux_area * flux_linkage_factor
+        if spatial_halbach === nothing
+            N_s * k_wd * B_g * flux_area * flux_linkage_factor
+        else
+            spatial_halbach.phase_flux_linkage_fundamental * flux_linkage_factor
+        end
     else
         phase_flux_linkage
     end

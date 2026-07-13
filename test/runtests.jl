@@ -1157,6 +1157,117 @@ end
         alpha_p, m, q1, inductance_model=:unsupported, backiron_fraction=0.5)
 end
 
+@testset "Physical coreless Halbach helpers" begin
+    rho20 = 1.724e-8
+    @test GeneratorSE.copper_resistivity_at_temperature(rho20, 20.0) == rho20
+    @test isapprox(
+        GeneratorSE.copper_resistivity_at_temperature(rho20, 80.0),
+        rho20 * (1 + 0.00393 * 60);
+        rtol = 1e-14,
+    )
+
+    rectangle = (
+        center = (0.0, 0.0, 0.0),
+        axis_u = (1.0, 0.0, 0.0),
+        axis_v = (0.0, 1.0, 0.0),
+        half_u = 0.7,
+        half_v = 0.4,
+        coefficient = 1.0,
+    )
+    rectangle_z = 0.8
+    rectangle_expected = 4 * atan(
+        rectangle.half_u * rectangle.half_v /
+        (rectangle_z * sqrt(rectangle.half_u^2 + rectangle.half_v^2 + rectangle_z^2)),
+    )
+    @test isapprox(
+        GeneratorSE._rectangular_charge_face_Bz((0.0, 0.0, rectangle_z), rectangle),
+        rectangle_expected;
+        rtol = 1e-13,
+    )
+
+    magnetic_kwargs = (
+        pole_pairs = 6.0,
+        magnet_inner_radius = 30.45e-3,
+        magnet_outer_radius = 68.55e-3,
+        magnet_thickness = 6.35e-3,
+        magnet_tangential_width = 6.35e-3,
+        magnets_total = 24.0,
+        winding_plane_offset = 3.85e-3,
+        coil_inner_radius = 35e-3,
+        coil_outer_radius = 65e-3,
+        coil_span_angle = 9.32 * pi / 180,
+        turns_per_coil = 14.0,
+        coils_in_series_per_phase = 6.0,
+        wire_outer_diameter = 0.65e-3,
+        turns_per_layer = 7.0,
+        coil_quadrature_order = 2,
+        rotor_samples = 24,
+    )
+    field = GeneratorSE.segmented_halbach_winding_properties(; magnetic_kwargs..., B_r = 1.32)
+    field_low_Br = GeneratorSE.segmented_halbach_winding_properties(; magnetic_kwargs..., B_r = 0.66)
+    field_farther_kwargs = merge(magnetic_kwargs, (winding_plane_offset = 5.0e-3,))
+    field_farther = GeneratorSE.segmented_halbach_winding_properties(;
+        field_farther_kwargs...,
+        B_r = 1.32,
+    )
+    @test field.packed_turn_geometry
+    @test field.B_fundamental > 0
+    @test field.phase_flux_linkage_fundamental > 0
+    @test isapprox(
+        field_low_Br.phase_flux_linkage_fundamental,
+        0.5 * field.phase_flux_linkage_fundamental;
+        rtol = 1e-12,
+    )
+    @test field_farther.phase_flux_linkage_fundamental < field.phase_flux_linkage_fundamental
+    field_order4 = GeneratorSE.segmented_halbach_winding_properties(;
+        merge(magnetic_kwargs, (coil_quadrature_order = 4, rotor_samples = 48))...,
+        B_r = 1.32,
+    )
+    field_order6 = GeneratorSE.segmented_halbach_winding_properties(;
+        merge(magnetic_kwargs, (coil_quadrature_order = 6, rotor_samples = 48))...,
+        B_r = 1.32,
+    )
+    @test isapprox(
+        field_order4.phase_flux_linkage_fundamental,
+        field_order6.phase_flux_linkage_fundamental;
+        rtol = 5e-4,
+    )
+
+    winding8 = GeneratorSE.coreless_winding_inductance(
+        coil_inner_radius = 35e-3,
+        coil_outer_radius = 65e-3,
+        coil_span_angle = 9.32 * pi / 180,
+        turns_per_coil = 14.0,
+        coils_in_series_per_phase = 6.0,
+        wire_diameter = 0.65e-3,
+        turns_per_layer = 7.0,
+        path_subdivisions = 8,
+    )
+    winding12 = GeneratorSE.coreless_winding_inductance(
+        coil_inner_radius = 35e-3,
+        coil_outer_radius = 65e-3,
+        coil_span_angle = 9.32 * pi / 180,
+        turns_per_coil = 14.0,
+        coils_in_series_per_phase = 6.0,
+        wire_diameter = 0.65e-3,
+        turns_per_layer = 7.0,
+        path_subdivisions = 12,
+    )
+    @test winding12.phase_inductance > 0
+    @test winding12.conductor_loops == 84
+    @test winding12.axial_layers == 2
+    @test 0.9 < winding12.phase_inductance / winding8.phase_inductance < 1.0
+    @test_throws ArgumentError GeneratorSE.coreless_winding_inductance(
+        coil_inner_radius = 35e-3,
+        coil_outer_radius = 65e-3,
+        coil_span_angle = 9.32 * pi / 180,
+        turns_per_coil = 14.0,
+        coils_in_series_per_phase = 6.0,
+        wire_diameter = 0.65e-3,
+        turns_per_layer = 14.0,
+    )
+end
+
 @testset "GeneratorSE PMSG_outer" begin
     machine_rating = 10.321e6
     rated_torque = 10.25e6  # rev 1 9.94718e6

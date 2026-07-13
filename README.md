@@ -62,5 +62,7 @@ dependencies.
 
 The main exported sizing and dynamics functions are `PMSG_arms`,
 `PMSG_axial`, `PMSG_axial_Halbach`, `PMSG_dynamics`,
-`PMSG_dynamics_params`, `generator_costing_complex`, and
+`PMSG_dynamics_params`, `segmented_halbach_winding_properties`,
+`coreless_winding_inductance`, `copper_resistivity_at_temperature`,
+`generator_costing_complex`, and
 `generator_costing_simple`.
