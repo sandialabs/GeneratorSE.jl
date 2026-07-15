@@ -139,6 +139,9 @@ from `PMSG_axial_Halbach` with `halbach_field_model=:segmented_cuboid`.
 When `wire_outer_diameter` and `turns_per_layer` are supplied, every nested
 turn aperture and axial layer is integrated separately; otherwise the supplied
 coil aperture is multiplied by `turns_per_coil`.
+For `winding_geometry_reference=:inner_support`, conductor paths use exact
+parallel offsets while the field integral uses an equal-area annular-sector
+proxy for each rounded offset aperture.
 
 The standard sequence is `+z, -tangential, -z, +tangential`, matching a
 four-step Halbach array whose strong side is above the rotor.  Back iron and
@@ -165,6 +168,8 @@ function segmented_halbach_winding_properties(;
     turn_pitch = nothing,
     layer_pitch = nothing,
     winding_geometry_reference = :mean_turn,
+    winding_support_clearance = 0.0,
+    phase_count = 3,
     magnetization_rotation = -1.0,
     coil_quadrature_order = 6,
     rotor_samples = 48,
@@ -253,10 +258,16 @@ function segmented_halbach_winding_properties(;
             turn_pitch === nothing ? wire_outer_diameter : turn_pitch,
             layer_pitch === nothing ? wire_outer_diameter : layer_pitch,
             winding_geometry_reference,
+            winding_support_clearance,
         )
     else
         nothing
     end
+    winding_clearance = packed_turns === nothing ? nothing :
+        _validate_interleaved_winding_clearance(
+            packed_turns, phase_count, coils_in_series_per_phase,
+            wire_outer_diameter,
+        )
 
     coil_nodes, coil_weights = _gauss_legendre(coil_quadrature_order)
     function coil_flux(center_angle, r_inner, r_outer, span, z_offset)
@@ -335,6 +346,7 @@ function segmented_halbach_winding_properties(;
         mean_radius_field = field,
         magnetic_charge_sources = length(sources),
         packed_turn_geometry = packed_turns !== nothing,
+        winding_clearance = winding_clearance,
     )
 end
 
@@ -347,10 +359,11 @@ function _wedge_turn_geometries(
     turn_pitch,
     layer_pitch,
     geometry_reference,
+    support_clearance = 0.0,
 )
     n_turns = Int(round(turns_per_coil))
     n_per_layer = Int(round(turns_per_layer))
-    if n_turns < 1 || n_per_layer < 1 || turn_pitch <= 0 || layer_pitch <= 0
+    if n_turns < 1 || n_per_layer < 1 || turn_pitch <= 0 || layer_pitch <= 0 || support_clearance < 0
         throw(ArgumentError("turn count, turns per layer, and winding pitches must be positive"))
     end
     n_layers = cld(n_turns, n_per_layer)
@@ -367,23 +380,86 @@ function _wedge_turn_geometries(
         inplane_offset = if geometry_reference == :mean_turn
             (convert(T, slot) - convert(T, turns_this_layer - 1) / 2) * turn_pitch
         elseif geometry_reference == :inner_support
-            (convert(T, slot) + convert(T, 0.5)) * turn_pitch
+            support_clearance + (convert(T, slot) + convert(T, 0.5)) * turn_pitch
         else
             throw(ArgumentError("winding_geometry_reference must be :mean_turn or :inner_support"))
         end
         axial_offset = (convert(T, layer) - convert(T, n_layers - 1) / 2) * layer_pitch
         r_in = coil_inner_radius - inplane_offset
         r_out = coil_outer_radius + inplane_offset
-        span = coil_span_angle + 2 * inplane_offset / radius_mean
+        # For an inner-support reference, preserve the exact area of a
+        # parallel offset of the bobbin aperture (Steiner formula) in the
+        # annular-sector proxy used by the magnetic-field quadrature. The
+        # inductance path itself is generated as the exact offset curve below.
+        span = if geometry_reference == :inner_support
+            support_area = 0.5 * (coil_outer_radius^2 - coil_inner_radius^2) * coil_span_angle
+            support_perimeter = 2 * (coil_outer_radius - coil_inner_radius) +
+                                coil_span_angle * (coil_inner_radius + coil_outer_radius)
+            offset_area = support_area + support_perimeter * inplane_offset + pi * inplane_offset^2
+            2 * offset_area / (r_out^2 - r_in^2)
+        else
+            coil_span_angle + 2 * inplane_offset / radius_mean
+        end
         if r_in <= 0 || r_out <= r_in || span <= 0
             throw(ArgumentError("wire packing creates an invalid turn geometry"))
         end
-        push!(geometries, (r_in = r_in, r_out = r_out, span = span, z = axial_offset))
+        push!(geometries, (
+            r_in = r_in,
+            r_out = r_out,
+            span = span,
+            z = axial_offset,
+            support_r_in = coil_inner_radius,
+            support_r_out = coil_outer_radius,
+            support_span = coil_span_angle,
+            inplane_offset = inplane_offset,
+            exact_parallel_offset = geometry_reference == :inner_support,
+        ))
     end
     return geometries
 end
 
-_wedge_turn_length(turn) = 2 * (turn.r_out - turn.r_in) + turn.span * (turn.r_in + turn.r_out)
+function _wedge_turn_length(turn)
+    if turn.exact_parallel_offset
+        support_perimeter = 2 * (turn.support_r_out - turn.support_r_in) +
+                            turn.support_span * (turn.support_r_in + turn.support_r_out)
+        return support_perimeter + 2 * pi * turn.inplane_offset
+    end
+    return 2 * (turn.r_out - turn.r_in) + turn.span * (turn.r_in + turn.r_out)
+end
+
+function _validate_interleaved_winding_clearance(
+    turns, phase_count, coils_per_phase, wire_outer_diameter,
+)
+    isempty(turns) && return nothing
+    if !turns[1].exact_parallel_offset
+        return nothing
+    end
+    n_phases = Int(round(phase_count))
+    n_coils = Int(round(coils_per_phase))
+    if n_phases < 2 || abs(phase_count - n_phases) > 1.0e-8
+        throw(ArgumentError("phase_count must be an integer of at least two"))
+    end
+    if n_coils < 1 || abs(coils_per_phase - n_coils) > 1.0e-8
+        throw(ArgumentError("coils_per_phase must be a positive integer"))
+    end
+    phase_pitch = 2 * pi / (n_phases * n_coils)
+    maximum_center_offset = maximum(turn.inplane_offset for turn in turns)
+    outer_winding_offset = maximum_center_offset + wire_outer_diameter / 2
+    occupied_span = turns[1].support_span +
+                    2 * atan(outer_winding_offset / turns[1].support_r_in)
+    margin = phase_pitch - occupied_span
+    if margin <= 0
+        throw(ArgumentError(
+            "inner-support turn packing overlaps the adjacent phase coil; " *
+            "reduce turns_per_layer, wire diameter/clearance, or coil support span",
+        ))
+    end
+    return (
+        phase_coil_pitch_angle = phase_pitch,
+        occupied_coil_span_angle = occupied_span,
+        coil_packing_margin_angle = margin,
+    )
+end
 
 function _append_line_elements!(elements, p0, p1, conductor, subdivisions)
     n = Int(round(subdivisions))
@@ -419,7 +495,90 @@ function _append_arc_elements!(elements, radius, theta0, theta1, z, conductor, s
     return elements
 end
 
+function _append_centered_arc_elements!(
+    elements, center, radius, theta0, theta1, z, conductor, subdivisions,
+)
+    radius <= 0 && return elements
+    n = Int(round(subdivisions))
+    for k = 0:(n - 1)
+        a0 = theta0 + (theta1 - theta0) * k / n
+        a1 = theta0 + (theta1 - theta0) * (k + 1) / n
+        p0 = (center[1] + radius * cos(a0), center[2] + radius * sin(a0), z)
+        p1 = (center[1] + radius * cos(a1), center[2] + radius * sin(a1), z)
+        _append_line_elements!(elements, p0, p1, conductor, 1)
+    end
+    return elements
+end
+
+function _append_parallel_offset_wedge_loop_elements!(
+    elements, turn, center_angle, conductor, subdivisions,
+)
+    half_span = turn.support_span / 2
+    theta_low = center_angle - half_span
+    theta_high = center_angle + half_span
+    r_in = turn.support_r_in
+    r_out = turn.support_r_out
+    offset = turn.inplane_offset
+    z = turn.z
+    er_low = (cos(theta_low), sin(theta_low), zero(z))
+    et_low = (-sin(theta_low), cos(theta_low), zero(z))
+    er_high = (cos(theta_high), sin(theta_high), zero(z))
+    et_high = (-sin(theta_high), cos(theta_high), zero(z))
+    inner_low = (r_in * er_low[1], r_in * er_low[2])
+    outer_low = (r_out * er_low[1], r_out * er_low[2])
+    inner_high = (r_in * er_high[1], r_in * er_high[2])
+    outer_high = (r_out * er_high[1], r_out * er_high[2])
+
+    p_inner_low = (
+        inner_low[1] - offset * et_low[1],
+        inner_low[2] - offset * et_low[2],
+        z,
+    )
+    p_outer_low = (
+        outer_low[1] - offset * et_low[1],
+        outer_low[2] - offset * et_low[2],
+        z,
+    )
+    p_outer_high = (
+        outer_high[1] + offset * et_high[1],
+        outer_high[2] + offset * et_high[2],
+        z,
+    )
+    p_inner_high = (
+        inner_high[1] + offset * et_high[1],
+        inner_high[2] + offset * et_high[2],
+        z,
+    )
+
+    _append_line_elements!(elements, p_inner_low, p_outer_low, conductor, subdivisions)
+    _append_centered_arc_elements!(
+        elements, outer_low, offset, theta_low - pi / 2, theta_low,
+        z, conductor, subdivisions,
+    )
+    _append_arc_elements!(elements, r_out + offset, theta_low, theta_high, z, conductor, subdivisions)
+    _append_centered_arc_elements!(
+        elements, outer_high, offset, theta_high, theta_high + pi / 2,
+        z, conductor, subdivisions,
+    )
+    _append_line_elements!(elements, p_outer_high, p_inner_high, conductor, subdivisions)
+    _append_centered_arc_elements!(
+        elements, inner_high, offset, theta_high + pi / 2, theta_high + pi,
+        z, conductor, subdivisions,
+    )
+    _append_arc_elements!(elements, r_in - offset, theta_high, theta_low, z, conductor, subdivisions)
+    _append_centered_arc_elements!(
+        elements, inner_low, offset, theta_low + pi, theta_low + 3 * pi / 2,
+        z, conductor, subdivisions,
+    )
+    return elements
+end
+
 function _append_wedge_loop_elements!(elements, turn, center_angle, conductor, subdivisions)
+    if turn.exact_parallel_offset
+        return _append_parallel_offset_wedge_loop_elements!(
+            elements, turn, center_angle, conductor, subdivisions,
+        )
+    end
     half_span = turn.span / 2
     theta_low = center_angle - half_span
     theta_high = center_angle + half_span
@@ -434,58 +593,20 @@ function _append_wedge_loop_elements!(elements, turn, center_angle, conductor, s
     return elements
 end
 
-"""
-    coreless_winding_inductance(; kwargs...)
-
-Calculate a phase inductance from the Neumann partial-inductance integral over
-the actual series-connected air-core turn paths.  Individual nested turns,
-axial layers, finite round-wire self terms, and mutual coupling among all
-same-phase coils are included.  The result excludes leads and magnetic backing;
-an independently calculated lead/backing contribution can be added explicitly.
-"""
-function coreless_winding_inductance(;
-    coil_inner_radius,
-    coil_outer_radius,
-    coil_span_angle,
-    turns_per_coil,
-    coils_in_series_per_phase,
-    wire_diameter,
-    turns_per_layer,
-    turn_pitch = wire_diameter,
-    layer_pitch = wire_diameter,
-    winding_geometry_reference = :mean_turn,
-    path_subdivisions = 12,
-    phase_lead_inductance = 0.0,
-    mu_0 = 4 * pi * 1.0e-7,
-)
-    if wire_diameter <= 0 || phase_lead_inductance < 0
-        throw(ArgumentError("wire diameter must be positive and lead inductance nonnegative"))
-    end
-    turns = _wedge_turn_geometries(
-        coil_inner_radius, coil_outer_radius, coil_span_angle, turns_per_coil,
-        turns_per_layer, turn_pitch, layer_pitch, winding_geometry_reference,
-    )
-    n_coils = Int(round(coils_in_series_per_phase))
-    n_coils < 1 && throw(ArgumentError("coils in series per phase must be positive"))
-    T = promote_type(
-        typeof(coil_inner_radius), typeof(coil_outer_radius), typeof(coil_span_angle),
-        typeof(wire_diameter), typeof(mu_0), Float64,
-    )
+function _coil_winding_elements(turns, center_angle, path_subdivisions, ::Type{T}) where {T}
     Element = NamedTuple{(:r, :dl, :conductor),Tuple{NTuple{3,T},NTuple{3,T},Int}}
     elements = Element[]
-    conductor = 0
-    for coil = 0:(n_coils - 1)
-        center_angle = 2 * pi * coil / n_coils
-        for turn in turns
-            conductor += 1
-            _append_wedge_loop_elements!(elements, turn, center_angle, conductor, path_subdivisions)
-        end
+    for (conductor, turn) in enumerate(turns)
+        _append_wedge_loop_elements!(
+            elements, turn, center_angle, conductor, path_subdivisions,
+        )
     end
+    return elements
+end
 
-    gmd_radius = 0.5 * wire_diameter * exp(-0.25)
-    coefficient = mu_0 / (4 * pi)
-    L = zero(T)
-    for i in eachindex(elements)
+function _coil_self_inductance(elements, gmd_radius, coefficient)
+    L = zero(coefficient)
+    @inbounds for i in eachindex(elements)
         ei = elements[i]
         length_dl = sqrt(_vdot(ei.dl, ei.dl))
         self_double_integral = 2 * (
@@ -495,35 +616,168 @@ function coreless_winding_inductance(;
         L += coefficient * self_double_integral
         for j = (i + 1):length(elements)
             ej = elements[j]
-            dot_dl = _vdot(ei.dl, ej.dl)
             dx = ei.r[1] - ej.r[1]
             dy = ei.r[2] - ej.r[2]
             dz = ei.r[3] - ej.r[3]
-            # The GMD regularization used in the analytic self-element term
-            # must also span adjacent pieces of the same physical conductor.
-            # Otherwise progressively shorter elements eventually sample the
-            # 1/R filament singularity inside the wire and the result drifts
-            # with path subdivision.  Distinct conductors retain the ordinary
-            # filament mutual-inductance kernel; their centerlines do not
-            # overlap when the packing checks above are satisfied.
             distance2 = dx * dx + dy * dy + dz * dz
+            # Adjacent pieces of one physical conductor share the same
+            # round-wire GMD regularization as the analytic self term.
             distance = ei.conductor == ej.conductor ?
                 sqrt(distance2 + gmd_radius^2) : sqrt(distance2)
-            # The Neumann double integral is symmetric in the two line
-            # elements; evaluate one triangle and account for its transpose.
-            L += 2 * coefficient * dot_dl / distance
+            L += 2 * coefficient * _vdot(ei.dl, ej.dl) / distance
         end
     end
+    return L
+end
+
+function _coil_mutual_inductance(elements_a, elements_b, coefficient)
+    M = zero(coefficient)
+    @inbounds for ea in elements_a, eb in elements_b
+        dx = ea.r[1] - eb.r[1]
+        dy = ea.r[2] - eb.r[2]
+        dz = ea.r[3] - eb.r[3]
+        M += coefficient * _vdot(ea.dl, eb.dl) / sqrt(dx * dx + dy * dy + dz * dz)
+    end
+    return M
+end
+
+"""
+    coreless_winding_inductance(; kwargs...)
+
+Calculate the positive-sequence (controller `dq`) inductance from the Neumann
+partial-inductance integral over the actual series-connected air-core turn
+paths. Individual nested turns, axial layers, finite round-wire self terms,
+same-phase coupling, and cross-phase mutual coupling are included. Phases are
+assumed to be uniformly interleaved around the stator. The returned
+`phase_inductance_matrix` is the full phase-variable matrix; for a balanced
+three-phase winding, `phase_inductance == dq_inductance == L_aa - M_ab` and a
+two-terminal line-to-line test gives `line_line_inductance == 2*dq_inductance`.
+
+The result excludes the phase jumpers and magnetic backing. An independently
+calculated, uncoupled per-phase lead contribution can be added with
+`phase_lead_inductance`. Permanent-magnet remanence is deliberately absent:
+it sets source flux linkage, not the incremental inductance of an ironless
+winding.
+"""
+function coreless_winding_inductance(;
+    coil_inner_radius,
+    coil_outer_radius,
+    coil_span_angle,
+    turns_per_coil,
+    coils_in_series_per_phase,
+    wire_diameter,
+    conductor_diameter = wire_diameter,
+    turns_per_layer,
+    turn_pitch = wire_diameter,
+    layer_pitch = wire_diameter,
+    winding_geometry_reference = :mean_turn,
+    winding_support_clearance = 0.0,
+    path_subdivisions = 12,
+    phase_count = 3,
+    phase_lead_inductance = 0.0,
+    mu_0 = 4 * pi * 1.0e-7,
+)
+    if wire_diameter <= 0 || conductor_diameter <= 0 || conductor_diameter > wire_diameter || phase_lead_inductance < 0
+        throw(ArgumentError("wire diameters must be positive, bare conductor no larger than the insulated wire, and lead inductance nonnegative"))
+    end
+    turns = _wedge_turn_geometries(
+        coil_inner_radius, coil_outer_radius, coil_span_angle, turns_per_coil,
+        turns_per_layer, turn_pitch, layer_pitch, winding_geometry_reference,
+        winding_support_clearance,
+    )
+    n_coils = Int(round(coils_in_series_per_phase))
+    n_coils < 1 && throw(ArgumentError("coils in series per phase must be positive"))
+    n_phases = Int(round(phase_count))
+    if n_phases < 2 || abs(phase_count - n_phases) > 1.0e-8
+        throw(ArgumentError("phase_count must be an integer of at least two"))
+    end
+    winding_clearance = _validate_interleaved_winding_clearance(
+        turns, n_phases, n_coils, wire_diameter,
+    )
+    T = promote_type(
+        typeof(coil_inner_radius), typeof(coil_outer_radius), typeof(coil_span_angle),
+        typeof(wire_diameter), typeof(conductor_diameter), typeof(mu_0), Float64,
+    )
+    gmd_radius = 0.5 * conductor_diameter * exp(-0.25)
+    coefficient = mu_0 / (4 * pi)
+    reference_elements = _coil_winding_elements(turns, zero(T), path_subdivisions, T)
+    coil_self = _coil_self_inductance(reference_elements, gmd_radius, coefficient)
+
+    # Rotational symmetry avoids constructing every turn in every phase while
+    # retaining the complete phase matrix. For one phase, n_coils times the
+    # coupling from a reference coil to all other same-phase coils is exactly
+    # the ordered-pair sum that appears in magnetic co-energy.
+    phase_self_winding = n_coils * coil_self
+    for coil = 1:(n_coils - 1)
+        elements = _coil_winding_elements(
+            turns, 2 * pi * coil / n_coils, path_subdivisions, T,
+        )
+        phase_self_winding += n_coils * _coil_mutual_inductance(
+            reference_elements, elements, coefficient,
+        )
+    end
+
+    # A uniformly interleaved m-phase winding has phase-k coils shifted by
+    # k/(m*n_coils) mechanical revolutions from phase 1. Each row of L_phase
+    # is circulant, so only the reference-phase mutuals are required.
+    phase_mutual = Vector{T}(undef, n_phases - 1)
+    for phase = 1:(n_phases - 1)
+        M = zero(T)
+        phase_offset = 2 * pi * phase / (n_phases * n_coils)
+        for coil = 0:(n_coils - 1)
+            elements = _coil_winding_elements(
+                turns, phase_offset + 2 * pi * coil / n_coils,
+                path_subdivisions, T,
+            )
+            M += n_coils * _coil_mutual_inductance(
+                reference_elements, elements, coefficient,
+            )
+        end
+        phase_mutual[phase] = M
+    end
+    for phase = 1:(n_phases - 1)
+        conjugate_phase = n_phases - phase
+        mutual_average = (phase_mutual[phase] + phase_mutual[conjugate_phase]) / 2
+        phase_mutual[phase] = mutual_average
+        phase_mutual[conjugate_phase] = mutual_average
+    end
+
+    phase_self = phase_self_winding + phase_lead_inductance
+    phase_inductance_matrix = Matrix{T}(undef, n_phases, n_phases)
+    for row = 1:n_phases, column = 1:n_phases
+        separation = mod(column - row, n_phases)
+        phase_inductance_matrix[row, column] = separation == 0 ?
+            phase_self : phase_mutual[separation]
+    end
+
+    # The positive-sequence eigenvalue is the stationary alpha-beta / rotating
+    # dq inductance. Reciprocity makes the imaginary Fourier component vanish;
+    # averaging conjugate mutual terms also suppresses quadrature roundoff.
+    dq_winding_inductance = phase_self_winding
+    for phase = 1:(n_phases - 1)
+        dq_winding_inductance += phase_mutual[phase] * cos(2 * pi * phase / n_phases)
+    end
+    dq_inductance = dq_winding_inductance + phase_lead_inductance
+    line_line_inductance = n_phases == 3 ? 2 * dq_inductance : nothing
     phase_turn_length = n_coils * sum(_wedge_turn_length(turn) for turn in turns)
     return (
-        phase_inductance = L + phase_lead_inductance,
-        winding_inductance = L,
+        phase_inductance = dq_inductance,
+        winding_inductance = dq_winding_inductance,
+        dq_inductance = dq_inductance,
+        phase_self_inductance = phase_self,
+        phase_mutual_inductances = phase_mutual,
+        phase_inductance_matrix = phase_inductance_matrix,
+        line_line_inductance = line_line_inductance,
         phase_lead_inductance = phase_lead_inductance,
+        conductor_diameter = conductor_diameter,
+        wire_outer_diameter = wire_diameter,
         phase_turn_length = phase_turn_length,
+        phase_count = n_phases,
+        winding_clearance = winding_clearance,
         turns_per_layer = turns_per_layer,
         axial_layers = cld(Int(round(turns_per_coil)), Int(round(turns_per_layer))),
-        conductor_loops = conductor,
-        line_elements = length(elements),
+        conductor_loops = n_coils * length(turns),
+        line_elements = n_coils * length(reference_elements),
     )
 end
 
@@ -612,6 +866,7 @@ function PMSG_axial_Halbach(
     turn_pitch = nothing,              # in-plane center spacing [m]; defaults to wire_outer_diameter
     layer_pitch = nothing,             # axial layer center spacing [m]; defaults to wire_outer_diameter
     winding_geometry_reference = :mean_turn, # :mean_turn or :inner_support
+    winding_support_clearance = 0.0,   # bobbin/insulation distance to the first wire surface [m]
     mean_turn_length = nothing,         # full conductor length of one turn [m]
     coil_inner_radius = nothing,       # optional trapezoid inner radius for mean-turn calculation [m]
     coil_outer_radius = nothing,       # optional trapezoid outer radius for mean-turn calculation [m]
@@ -729,6 +984,8 @@ function PMSG_axial_Halbach(
             turn_pitch,
             layer_pitch,
             winding_geometry_reference,
+            winding_support_clearance,
+            phase_count = m,
             magnetization_rotation = halbach_magnetization_rotation,
             coil_quadrature_order = halbach_coil_quadrature_order,
             rotor_samples = halbach_rotor_samples,
@@ -792,6 +1049,9 @@ function PMSG_axial_Halbach(
     if wire_outer_diameter !== nothing && wire_outer_diameter <= 0
         throw(ArgumentError("wire_outer_diameter must be positive"))
     end
+    if winding_support_clearance < 0
+        throw(ArgumentError("winding_support_clearance must be nonnegative"))
+    end
     if copper_resistivity_20c !== nothing && copper_resistivity_20c <= 0
         throw(ArgumentError("copper_resistivity_20c must be positive"))
     end
@@ -822,9 +1082,15 @@ function PMSG_axial_Halbach(
             turn_pitch === nothing ? wire_outer_diameter : turn_pitch,
             layer_pitch === nothing ? wire_outer_diameter : layer_pitch,
             winding_geometry_reference,
+            winding_support_clearance,
         )
     else
         nothing
+    end
+    if packed_turns !== nothing
+        _validate_interleaved_winding_clearance(
+            packed_turns, m, coils_in_series_per_phase, wire_outer_diameter,
+        )
     end
     phase_path_length = if packed_turns === nothing
         N_s * l_turn_physical + phase_lead_length
@@ -892,11 +1158,15 @@ function PMSG_axial_Halbach(
                 turns_per_coil,
                 coils_in_series_per_phase,
                 wire_diameter = wire_outer_diameter,
+                conductor_diameter = supplied_conductor_area === nothing ?
+                    wire_outer_diameter : 2 * sqrt(supplied_conductor_area / pi),
                 turns_per_layer,
                 turn_pitch = turn_pitch === nothing ? wire_outer_diameter : turn_pitch,
                 layer_pitch = layer_pitch === nothing ? wire_outer_diameter : layer_pitch,
                 winding_geometry_reference,
+                winding_support_clearance,
                 path_subdivisions = inductance_path_subdivisions,
+                phase_count = m,
                 phase_lead_inductance,
                 mu_0,
             )

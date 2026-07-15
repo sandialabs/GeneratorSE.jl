@@ -1199,7 +1199,7 @@ end
         turns_per_coil = 14.0,
         coils_in_series_per_phase = 6.0,
         wire_outer_diameter = 0.65e-3,
-        turns_per_layer = 7.0,
+        turns_per_layer = 5.0,
         coil_quadrature_order = 2,
         rotor_samples = 24,
     )
@@ -1256,7 +1256,53 @@ end
     @test winding12.phase_inductance > 0
     @test winding12.conductor_loops == 84
     @test winding12.axial_layers == 2
+    @test winding12.phase_count == 3
+    @test isapprox(
+        winding12.phase_inductance_matrix,
+        transpose(winding12.phase_inductance_matrix);
+        rtol = 1e-12,
+        atol = 1e-18,
+    )
+    @test winding12.phase_mutual_inductances[1] < 0
+    @test isapprox(
+        winding12.dq_inductance,
+        winding12.phase_self_inductance - winding12.phase_mutual_inductances[1];
+        rtol = 1e-12,
+    )
+    @test winding12.phase_inductance == winding12.dq_inductance
+    @test isapprox(winding12.line_line_inductance, 2 * winding12.dq_inductance; rtol = 1e-12)
+    balanced_d = [1.0, -0.5, -0.5]
+    balanced_q = [0.0, sqrt(3) / 2, -sqrt(3) / 2]
+    Ld_energy = sum(balanced_d .* (winding12.phase_inductance_matrix * balanced_d)) / sum(abs2, balanced_d)
+    Lq_energy = sum(balanced_q .* (winding12.phase_inductance_matrix * balanced_q)) / sum(abs2, balanced_q)
+    @test isapprox(Ld_energy, winding12.dq_inductance; rtol = 1e-12)
+    @test isapprox(Lq_energy, winding12.dq_inductance; rtol = 1e-12)
     @test 0.9 < winding12.phase_inductance / winding8.phase_inductance < 1.0
+
+    support_winding = GeneratorSE.coreless_winding_inductance(
+        coil_inner_radius = 35e-3,
+        coil_outer_radius = 65e-3,
+        coil_span_angle = 9.32 * pi / 180,
+        turns_per_coil = 14.0,
+        coils_in_series_per_phase = 6.0,
+        wire_diameter = 0.65e-3,
+        conductor_diameter = 0.644e-3,
+        turns_per_layer = 5.0,
+        winding_geometry_reference = :inner_support,
+        path_subdivisions = 12,
+    )
+    support_perimeter = 2 * (65e-3 - 35e-3) + 9.32 * pi / 180 * (35e-3 + 65e-3)
+    offsets = vcat(
+        ((0:4) .+ 0.5) .* 0.65e-3,
+        ((0:4) .+ 0.5) .* 0.65e-3,
+        ((0:3) .+ 0.5) .* 0.65e-3,
+    )
+    expected_phase_length = 6 * sum(support_perimeter .+ 2 * pi .* offsets)
+    @test isapprox(support_winding.phase_turn_length, expected_phase_length; rtol = 1e-14)
+    @test support_winding.dq_inductance > winding12.dq_inductance
+    @test support_winding.line_line_inductance > winding12.line_line_inductance
+    @test support_winding.conductor_diameter == 0.644e-3
+    @test support_winding.winding_clearance.coil_packing_margin_angle > 0
     @test_throws ArgumentError GeneratorSE.coreless_winding_inductance(
         coil_inner_radius = 35e-3,
         coil_outer_radius = 65e-3,
@@ -1265,6 +1311,26 @@ end
         coils_in_series_per_phase = 6.0,
         wire_diameter = 0.65e-3,
         turns_per_layer = 14.0,
+    )
+    @test_throws ArgumentError GeneratorSE.coreless_winding_inductance(
+        coil_inner_radius = 35e-3,
+        coil_outer_radius = 65e-3,
+        coil_span_angle = 9.32 * pi / 180,
+        turns_per_coil = 14.0,
+        coils_in_series_per_phase = 6.0,
+        wire_diameter = 0.65e-3,
+        conductor_diameter = 0.7e-3,
+        turns_per_layer = 7.0,
+    )
+    @test_throws ArgumentError GeneratorSE.coreless_winding_inductance(
+        coil_inner_radius = 35e-3,
+        coil_outer_radius = 65e-3,
+        coil_span_angle = 9.32 * pi / 180,
+        turns_per_coil = 14.0,
+        coils_in_series_per_phase = 6.0,
+        wire_diameter = 0.65e-3,
+        turns_per_layer = 7.0,
+        winding_geometry_reference = :inner_support,
     )
 end
 

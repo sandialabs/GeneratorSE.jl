@@ -61,17 +61,25 @@ bare AWG area controls resistance. Leads, joints, and parallel paths remain
 separate inputs.
 
 For `inductance_model=:coreless_filament`, every nested round-wire turn in all
-series phase coils is represented by straight line elements. The phase partial
-inductance follows the Neumann integral
+phases is represented by line elements. The complete phase-variable matrix
+follows the Neumann integral
 
 ```math
-L_\phi = \frac{\mu_0}{4\pi}\sum_{i,j}
+\left[\mathbf L_{abc}\right]_{xy} =
+\frac{\mu_0}{4\pi}\sum_{i\in x}\sum_{j\in y}
 \oint_{C_i}\oint_{C_j}\frac{d\boldsymbol\ell_i\cdot d\boldsymbol\ell_j}
 {|\mathbf r_i-\mathbf r_j|}.
 ```
 
 The round-wire self term uses the geometric-mean-distance radius
-`r*exp(-1/4)`. This is a free-space conductor calculation, so magnetic backing
+`r*exp(-1/4)`. Bare conductor diameter and insulated packing diameter are
+separate. For balanced uniformly interleaved phases, the positive-sequence
+eigenvalue is the controller dq inductance; a three-phase two-terminal
+line-to-line test gives twice that value. The function returns these bases
+separately. When supplied dimensions describe an inner bobbin support,
+`winding_geometry_reference=:inner_support` generates exact parallel-offset
+paths and `winding_support_clearance` adds known clearance before the first
+wire. This is a free-space conductor calculation, so magnetic backing
 and independently justified lead inductance must be supplied separately. The
 path subdivision should be converged for the geometry; it is not a calibration
 parameter. Slotless-winding inductance is particularly sensitive to coil

@@ -56,6 +56,10 @@ support geometry are all supplied, the resistance path follows the individual
 nested turns rather than multiplying one mean perimeter.
 Wire area and turn geometry may be supplied independently; an omitted quantity
 uses the model's internal winding-geometry or slot-fill assumption.
+Use winding geometry reference :inner_support when the supplied contour is a
+bobbin aperture; turns are then true parallel offsets with rounded corners.
+The winding support clearance input adds known insulation or bobbin-wall
+clearance before the first conductor.
 
 Inductance similarly uses `phase_inductance` first. Otherwise,
 `inductance_model=:coreless_filament` uses the individual round-wire paths and
@@ -65,6 +69,12 @@ the Neumann self/mutual integral. It requires `wire_outer_diameter`,
 convergence. It is a free-space winding calculation. Add
 `phase_lead_inductance` only from an independent calculation or measurement.
 It does not invent a slotted-machine leakage term.
+
+The coreless result is the balanced positive-sequence/dq eigenvalue of the
+complete phase matrix, not open-circuit phase self-inductance. It also reports
+phase self/mutual terms and, for three phases, the ordinary two-terminal
+line-to-line inductance. Bare diameter inferred from AWG/conductor area sets the
+round-wire self term while insulated diameter sets packing.
 
 The lower-fidelity
 `inductance_model=:concentrated_coreless` requires `turns_per_coil`,
